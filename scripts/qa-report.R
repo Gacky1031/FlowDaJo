@@ -1,0 +1,12 @@
+invisible(Sys.setlocale("LC_CTYPE", "English_United States.utf8"))
+source("r/core.R", encoding = "UTF-8")
+dir.create("artifacts",showWarnings=FALSE)
+dir.create("output/pdf",showWarnings=FALSE,recursive=TRUE)
+storage<-file.path(getwd(),"artifacts/cache")
+demo<-dispatch(list(action="demo",storage=storage))
+s<-demo$samples[[1]];s$compensation$enabled<-TRUE
+g<-list(id="lymphocytes",sampleId=s$id,name="Lymphocytes",parent="root",type="rectangle",x=axis_default("FSC-A"),y=axis_default("SSC-A"),bounds=list(18000,78000,1000,41000))
+p<-list(schema="flowdesk-r/1",name="FlowDesk validation / 検証",samples=list(s),gates=list(g),selectedGate="root",notes="Synthetic data. Compensation on. 日本語の表示確認。",importWarnings=demo$warnings)
+dispatch(list(action="save",project=p,path="artifacts/demo.flowdesk-r.json",storage=storage))
+export_pdf(p,storage,"output/pdf/flowdesk-validation.pdf")
+write.FCS(demo_frame(),"artifacts/demo.fcs")

@@ -1,0 +1,995 @@
+:root {
+  font-family: "Segoe UI", "Yu Gothic UI", sans-serif;
+  font-size: 12px;
+  color: #283d50;
+  background: #edf1f5;
+  font-synthesis: none;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  overflow: hidden;
+}
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+button {
+  border: 1px solid #c9d3dd;
+  border-radius: 4px;
+  padding: 6px 9px;
+  background: #fff;
+  cursor: pointer;
+  white-space: nowrap;
+}
+button:hover {
+  background: #e7f0fa;
+  border-color: #94b3d2;
+}
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+button.primary {
+  background: #17699b;
+  border-color: #17699b;
+  color: white;
+}
+button.active {
+  background: #e1eef9;
+  color: #0c5b92;
+  border-color: #6fa7d1;
+}
+button.danger {
+  color: #ac3939;
+}
+.dirty:after {
+  content: " *";
+}
+input,
+select,
+textarea {
+  min-width: 0;
+  border: 1px solid #ccd6df;
+  border-radius: 3px;
+  background: white;
+  padding: 5px;
+}
+input:focus,
+select:focus,
+button:focus-visible {
+  outline: 2px solid #5c9fcd;
+  outline-offset: 1px;
+}
+header {
+  height: 42px;
+  background: #253c53;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  gap: 22px;
+}
+header strong {
+  font-size: 18px;
+}
+header strong span {
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 1px;
+  color: #b9cadd;
+  margin-left: 8px;
+}
+header > span {
+  font-size: 11px;
+  color: #c3d5e3;
+}
+header input {
+  width: 260px;
+  background: #354d64;
+  border: 1px solid #52697f;
+  color: #fff;
+}
+.spacer {
+  flex: 1;
+}
+.toolbar {
+  height: 43px;
+  padding: 5px 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #fafbfd;
+  border-bottom: 1px solid #ccd6df;
+}
+.divider {
+  height: 20px;
+  border-left: 1px solid #d4dce3;
+  margin: 0 4px;
+}
+.shell {
+  height: calc(100vh - 114px);
+  display: grid;
+  grid-template-columns: 220px minmax(400px, 1fr) 265px;
+}
+.browser,
+.properties {
+  overflow: auto;
+  background: #fafbfd;
+}
+.browser {
+  border-right: 1px solid #ccd6df;
+}
+.properties {
+  border-left: 1px solid #ccd6df;
+  padding: 0 12px 18px;
+}
+h2 {
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  color: #60778a;
+  margin: 18px 0 12px;
+}
+.browser h2 {
+  margin: 17px 12px;
+}
+.browser h2 span {
+  float: right;
+}
+main {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.sheet-tabs {
+  height: 38px;
+  display: flex;
+  gap: 4px;
+  padding: 6px 8px 0;
+  background: #e5ebf1;
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+.sheet-tabs button {
+  border-bottom: 0;
+  border-radius: 5px 5px 0 0;
+  padding: 6px 12px;
+}
+.sheet-tabs button.active {
+  background: #fff;
+  font-weight: 600;
+}
+.sheet-tabs small {
+  color: #738599;
+  margin-left: 7px;
+}
+.workspace-heading {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  flex-wrap: wrap;
+  background: #fff;
+  padding: 7px 10px;
+  border-bottom: 1px solid #d4dde5;
+  min-height: 44px;
+}
+.workspace-heading input {
+  width: 170px;
+  border: 0;
+  font-weight: 600;
+}
+.gate-tools {
+  display: flex;
+  gap: 3px;
+}
+.gate-tools button {
+  padding: 5px 7px;
+}
+.gate-scope {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  padding-left: 8px;
+  border-left: 1px solid #d4dce3;
+  color: #536b7d;
+  font-size: 11px;
+}
+.gate-scope button {
+  padding: 4px 7px;
+}
+.viewport {
+  overflow: auto;
+  flex: 1;
+  min-height: 250px;
+  background: #eaf0f5;
+}
+.board {
+  position: relative;
+  background: #f5f6f7;
+}
+.board.drop-target {
+  background: #e8f4fb;
+  outline: 2px dashed #2e7da5;
+  outline-offset: -8px;
+}.plot-card {
+  z-index: 0;
+  position: absolute;
+  background: #fff;
+  border: 1px solid #b9c8d4;
+  border-radius: 5px;
+  box-shadow: 0 2px 5px #2b405115;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.plot-card.active {
+  z-index: 1;
+  border: 2px solid #317cac;
+  box-shadow: 0 2px 9px #175d9420;
+}
+.plot-head {
+  display: flex;
+  height: 29px;
+  align-items: center;
+  background: #f1f5f8;
+  cursor: move;
+  gap: 3px;
+  padding: 0 5px;
+  flex-shrink: 0;
+  touch-action: none;
+}
+.grip {
+  font-size: 18px;
+  color: #839aaa;
+}
+.plot-head select {
+  flex: 1;
+  width: 80px;
+  font-size: 10px;
+  padding: 2px;
+  border: 0;
+  background: transparent;
+}
+.plot-head button {
+  border: 0;
+  background: transparent;
+  padding: 1px 4px;
+  font-size: 17px;
+  line-height: 18px;
+}
+.plot-pop {
+  display: flex;
+  gap: 6px;
+  padding: 4px 7px;
+  flex-shrink: 0;
+  height: 30px;
+}
+.plot-pop select {
+  font-size: 11px;
+  padding: 2px;
+  border-color: #e2e8ed;
+}
+.plot-pop select[data-population] {
+  flex: 1;
+  width: 90px;
+}
+.plot-pop select:last-child {
+  width: 102px;
+}
+.plot-stage {
+  position: relative;
+  flex: 1;
+  min-height: 120px;
+  touch-action: none;
+  outline: none;
+}
+.plot-stage canvas,
+.plot-stage svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.plot-stage svg {
+  overflow: hidden;
+}
+.gate-shape {
+  pointer-events: stroke;
+  cursor: move;
+}
+.plot-stage svg circle {
+  cursor: crosshair;
+}
+.plot-stage svg text {
+  cursor: move;
+}
+.axis-label {
+  position: absolute;
+  z-index: 2;
+  border: 1px solid transparent;
+  background: transparent;
+  padding: 3px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.axis-label span {
+  color: #7c91a3;
+  margin-left: 4px;
+}
+.axis-x {
+  bottom: 2px;
+  left: 70px;
+  width: calc(100% - 100px);
+}
+.axis-y {
+  left: 0;
+  top: 50%;
+  width: 175px;
+  max-width: calc(100% - 75px);
+  transform: translate(-42%, -50%) rotate(-90deg);
+  transform-origin: center;
+}
+.axis-transform {
+  position: absolute;
+  z-index: 3;
+  width: 23px;
+  height: 23px;
+  padding: 0;
+  font-size: 10px;
+  font-weight: 700;
+  color: #426e8b;
+  background: #f1f6fa;
+}
+.transform-x {
+  bottom: 3px;
+  right: 4px;
+}
+.transform-y {
+  top: 2px;
+  left: 3px;
+}
+.counts-label {
+  text-align: center;
+}
+.plot-stage .plot-error {
+  inset: 25px 30px 54px 70px;
+  padding: 8px;
+  font-size: 11px;
+}
+.axis-summary > button {
+  display: grid;
+  width: 100%;
+  grid-template-columns: 1fr auto;
+  text-align: left;
+  padding: 9px;
+  margin: 7px 0;
+  gap: 4px;
+}
+.axis-summary strong {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.axis-summary small {
+  grid-row: 2;
+  color: #708798;
+}
+.axis-summary button > span {
+  grid-column: 2;
+  grid-row: 1 / 3;
+  align-self: center;
+  font-size: 10px;
+  color: #587d96;
+}
+.plot-focused .plot-card:not(.focused) {
+  display: none;
+}
+.plot-card.active.focused {
+  position: fixed;
+  left: 235px !important;
+  top: 186px !important;
+  width: calc(100vw - 515px) !important;
+  height: calc(100vh - 385px) !important;
+  min-height: 270px;
+  z-index: 5;
+}
+.plot-card.focused .resize-grip,
+.plot-card.focused .grip {
+  display: none;
+}
+.plot-card.focused .plot-head {
+  cursor: default;
+}
+.plot-card.focused .axis-y {
+  width: 240px;
+}
+dialog.parameter-picker {
+  position: fixed;
+  margin: 0;
+  padding: 0;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+  border-radius: 7px;
+}
+.parameter-picker::backdrop {
+  background: transparent;
+}
+.axis-dialog-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+}
+.axis-dialog-heading h2 {
+  margin: 0 0 5px;
+  color: #294e68;
+}
+.axis-dialog-heading p {
+  margin: 0;
+  font-weight: 600;
+  color: #53819e;
+}
+.axis-dialog-heading > button {
+  border: 0;
+  font-size: 20px;
+  padding: 0 6px;
+  background: transparent;
+}
+.parameter-picker .axis-dialog-heading {
+  padding: 10px 12px 4px;
+}
+.parameter-picker input {
+  display: block;
+  width: calc(100% - 24px);
+  margin: 5px 12px 9px;
+  padding: 8px;
+}
+.parameter-list {
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 4px 6px;
+  border-block: 1px solid #dfe8ef;
+}
+.parameter-list button {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  padding: 9px 8px;
+  white-space: normal;
+}
+.parameter-list button.highlight {
+  background: #e0eef9;
+}
+.parameter-list button[aria-selected="true"] {
+  color: #0b6999;
+}
+.parameter-list strong {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.parameter-list small {
+  display: block;
+  color: #718596;
+  margin-top: 3px;
+}
+.parameter-check {
+  flex: 0 0 15px;
+}
+.parameter-footer {
+  padding: 8px 12px;
+}
+.parameter-footer button {
+  border: 0;
+  padding: 5px 0;
+  color: #24678e;
+}
+.parameter-footer small {
+  display: block;
+  color: #7a8c9b;
+  font-size: 10px;
+  margin: 4px 0;
+}
+.no-parameters {
+  padding: 12px;
+  color: #758b9b;
+}
+dialog.axis-dialog {
+  width: 510px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+}
+.axis-dialog label {
+  display: block;
+  color: #506e83;
+  line-height: 1.5;
+}
+.axis-dialog label > input:not([type="checkbox"]),
+.axis-dialog label > select {
+  display: block;
+  width: 100%;
+  padding: 7px;
+  margin-top: 4px;
+}
+.axis-dialog fieldset {
+  border: 1px solid #d0dde7;
+  border-radius: 5px;
+  padding: 10px 12px;
+  margin: 15px 0;
+}
+.axis-dialog legend {
+  color: #3e6b88;
+  font-weight: 600;
+  padding: 0 5px;
+}
+.axis-dialog fieldset:disabled {
+  opacity: 0.5;
+}
+.axis-dialog .check {
+  margin: 2px 0 10px;
+}
+.axis-dialog .two {
+  row-gap: 10px;
+}
+.axis-dialog .hint {
+  font-size: 11px;
+}
+.axis-dialog-actions {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  border-top: 1px solid #dde6ec;
+  padding-top: 14px;
+}
+.axis-validation {
+  color: #ab392d;
+  font-size: 11px;
+  min-height: 16px;
+}
+@media (max-width: 1350px) {
+  .plot-card.active.focused {
+    left: 215px !important;
+    width: calc(100vw - 230px) !important;
+  }
+}
+.resize-grip {
+  z-index: 4;
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  font-size: 11px;
+  line-height: 11px;
+  color: #7697b0;
+  cursor: nwse-resize;
+  touch-action: none;
+}
+.plot-error {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  color: #9f4d27;
+  background: #fff8f1;
+  text-align: center;
+  overflow: auto;
+}
+.plot-error[hidden] {
+  display: none;
+}
+.invalid canvas,
+.invalid svg {
+  visibility: hidden;
+}
+.calculating .plot-head:after {
+  content: "•";
+  color: #cf8b20;
+  font-size: 18px;
+}
+.statistics {
+  flex-shrink: 0;
+  height: 155px;
+  overflow: auto;
+  background: white;
+  border-top: 1px solid #c8d5df;
+}
+.statistics.stale tbody {
+  opacity: 0.45;
+}
+.stats-title {
+  padding: 8px 12px;
+  position: sticky;
+  top: 0;
+  background: #f5f8fa;
+  font-weight: 600;
+  z-index: 1;
+}
+.stats-title span {
+  margin-left: 12px;
+  font-size: 10px;
+  font-weight: 400;
+  color: #7790a2;
+}
+table {
+  border-collapse: collapse;
+  font-size: 11px;
+  width: 100%;
+}
+th,
+td {
+  padding: 6px 10px;
+  border-bottom: 1px solid #e5ebef;
+  text-align: right;
+  white-space: nowrap;
+}
+th {
+  font-weight: 500;
+  color: #617a8e;
+  background: #fafcfd;
+}
+td:first-child,
+th:first-child {
+  text-align: left;
+}
+.sample-group {
+  margin: 4px 7px;
+}
+.sample {
+  display: block;
+  border: 0;
+  text-align: left;
+  width: 100%;
+  background: transparent;
+  padding: 10px 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sample.selected {
+  background: #e3edf5;
+  color: #135c90;
+}
+.sample small {
+  display: block;
+  margin-top: 3px;
+  font-size: 10px;
+  color: #6d879a;
+}
+.population {
+  display: flex;
+  gap: 4px;
+  justify-content: space-between;
+  padding: 6px;
+  cursor: pointer;
+  border-radius: 3px;
+  font-size: 11px;
+}
+.population:hover {
+  background: #edf3f8;
+}
+.population.selected {
+  background: #dcebf6;
+  color: #145e94;
+}
+.population small {
+  color: #7390a4;
+}
+.population span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scope-badge {
+  flex: 0 0 auto;
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: #23688f;
+  background: #e4f0f7;
+  font-size: 9px;
+}
+.hint {
+  font-size: 10px;
+  color: #708798;
+  line-height: 1.65;
+  white-space: pre-line;
+}
+.tree-help {
+  margin: 22px 12px 12px;
+}
+.browser > button {
+  margin: 0 9px;
+  width: calc(100% - 18px);
+  font-size: 11px;
+}
+.properties label {
+  display: block;
+  font-size: 11px;
+  color: #627a8e;
+  margin: 5px 0;
+}
+.properties label input,
+.properties label select {
+  width: 100%;
+  display: block;
+  margin-top: 3px;
+}
+.properties button {
+  font-size: 11px;
+  margin: 3px 3px 3px 0;
+}
+.properties fieldset {
+  border: 1px solid #d2dfe8;
+  border-radius: 4px;
+  margin: 12px 0;
+  padding: 7px;
+}
+.properties legend {
+  color: #376984;
+  font-weight: 600;
+  font-size: 11px;
+}
+.two {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.parameters {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 5px;
+}
+.parameters input {
+  font-size: 10px;
+  padding: 4px 2px;
+}
+.properties details {
+  border-top: 1px solid #d5e0e8;
+  margin-top: 16px;
+  padding-top: 12px;
+}
+.properties summary {
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+}
+.properties textarea {
+  width: 100%;
+  min-height: 70px;
+  margin-top: 10px;
+}
+.matrix-wrap {
+  overflow: auto;
+  margin: 10px 0;
+}
+.matrix-wrap th,
+.matrix-wrap td {
+  padding: 3px;
+  font-size: 9px;
+}
+.matrix-wrap input {
+  width: 52px;
+  padding: 3px;
+}
+.check {
+  display: flex !important;
+  align-items: center;
+  gap: 6px;
+}
+.check input {
+  width: auto !important;
+  margin: 0 !important;
+}
+.status {
+  height: 29px;
+  background: #fff;
+  border-top: 1px solid #cad5de;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.status .led {
+  width: 6px;
+  height: 6px;
+  background: #288c71;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.status.pending .led {
+  background: #d48b29;
+}
+.status.error {
+  color: #a03e2c;
+  background: #fff4f0;
+}
+.empty {
+  padding: 110px 60px;
+  color: #7d92a2;
+}
+.empty h1 {
+  font-size: 25px;
+  color: #3b6683;
+  font-weight: 400;
+}
+.empty p {
+  line-height: 2;
+}
+dialog {
+  border: 1px solid #b8cbd8;
+  border-radius: 7px;
+  padding: 22px;
+  max-width: 520px;
+  box-shadow: 0 10px 80px #18384f44;
+}
+dialog::backdrop {
+  background: #102e4555;
+}
+dialog .check {
+  margin: 12px 0;
+}
+dialog h2 {
+  font-size: 16px;
+  margin-top: 0;
+}
+@media (max-width: 1350px) {
+  .shell {
+    grid-template-columns: 205px minmax(400px, 1fr);
+  }
+  .properties {
+    display: none;
+  }
+  .show-properties .properties {
+    display: block;
+    position: fixed;
+    right: 0;
+    top: 85px;
+    bottom: 29px;
+    width: 280px;
+    z-index: 10;
+    box-shadow: -5px 0 20px #253d5222;
+  }
+  .toolbar {
+    gap: 4px;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  .toolbar button {
+    font-size: 11px;
+    padding: 6px;
+    flex-shrink: 0;
+  }
+  .toolbar #report {
+    display: inline-flex;
+  }
+}
+@media (min-width: 1351px) {
+  #toggle-properties {
+    display: inline-flex;
+  }
+}
+
+.plot-pop > button {
+  border: 0;
+  padding: 0 4px;
+}
+.plot-card .plot-head button {
+  font-size: 14px;
+}
+.context-menu {
+  position: fixed;
+  margin: 0;
+  padding: 6px;
+  width: 255px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  overflow: auto;
+}
+.context-menu::backdrop {
+  background: transparent;
+}
+.context-menu > strong {
+  display: block;
+  padding: 8px 9px;
+  border-bottom: 1px solid #dae3eb;
+  margin-bottom: 4px;
+  overflow-wrap: anywhere;
+}
+.context-menu button {
+  display: block;
+  text-align: left;
+  width: 100%;
+  border: 0;
+  padding: 8px 9px;
+  background: transparent;
+  white-space: normal;
+}
+.context-menu button:hover,
+.context-menu button:focus {
+  background: #e9f2fa;
+}
+.gate-tools {
+  flex-wrap: wrap;
+}
+.toolbar {
+  overflow-x: auto;
+}
+
+
+.sheet-mode,
+.gate-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #536b7d;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.sheet-mode {
+  border-left: 1px solid #d4dce3;
+  padding-left: 8px;
+  margin-left: 2px;
+}
+.sheet-mode button,
+.gate-filter button {
+  padding: 4px 7px;
+}
+.sheet-mode button.active,
+.gate-filter button.active {
+  color: #fff;
+  background: #317cac;
+  border-color: #317cac;
+}
+.gate-filter {
+  width: 100%;
+  border-top: 1px solid #edf1f4;
+  padding-top: 5px;
+  margin-top: 2px;
+}
+.selection-info {
+  color: #536b7d;
+  font-size: 11px;
+  white-space: nowrap;
+  padding: 0 3px;
+}
+.plot-select {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 20px;
+  flex: 0 0 14px;
+  cursor: pointer;
+}
+.plot-select input {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  accent-color: #b57b18;
+}
+.plot-card.selected-card {
+  outline: 2px solid #b57b18;
+  outline-offset: -2px;
+}
+.plot-card.selected-card .plot-head {
+  background: #fff4dc;
+}
+.grid-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}

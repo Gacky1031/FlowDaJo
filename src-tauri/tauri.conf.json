@@ -1,0 +1,52 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "FlowDesk Tauri",
+  "version": "0.4.0",
+  "identifier": "org.flowdesk.rtauri",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "FlowDesk Tauri \uff82\uff77 R / flowCore",
+        "width": 1480,
+        "height": 960,
+        "minWidth": 1080,
+        "minHeight": 720
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "resources": {
+      "../r/core.R": "r/core.R",
+      "../r/worker.R": "r/worker.R",
+      "runtime/WebView2Loader.dll": "WebView2Loader.dll",
+      "runtime/R/": "runtime/R/",
+      "runtime/WebView2/": "runtime/WebView2/",
+      "runtime/sources/": "runtime/sources/",
+      "runtime/r-manifest.json": "runtime/r-manifest.json",
+      "runtime/THIRD-PARTY-NOTICES.md": "runtime/THIRD-PARTY-NOTICES.md",
+      "../r/worksheet.R": "r/worksheet.R"
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "skip"
+      },
+      "nsis": {
+        "displayLanguageSelector": false,
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

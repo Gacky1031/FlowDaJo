@@ -1,0 +1,245 @@
+{
+  "r": "4.5.1",
+  "packages": [
+    {
+      "package": "BH",
+      "version": "1.87.0-1",
+      "license": "BSL-1.0",
+      "priority": null,
+      "repository": "CRAN",
+      "git": null
+    },
+    {
+      "package": "Biobase",
+      "version": "2.68.0",
+      "license": "Artistic-2.0",
+      "priority": null,
+      "repository": "Bioconductor 3.21",
+      "git": "9fd33ea"
+    },
+    {
+      "package": "BiocGenerics",
+      "version": "0.54.0",
+      "license": "Artistic-2.0",
+      "priority": null,
+      "repository": "Bioconductor 3.21",
+      "git": "75c4815"
+    },
+    {
+      "package": "RProtoBufLib",
+      "version": "2.20.0",
+      "license": "BSD_3_clause",
+      "priority": null,
+      "repository": "Bioconductor 3.21",
+      "git": "df750e3"
+    },
+    {
+      "package": "Rcpp",
+      "version": "1.1.0",
+      "license": "GPL (>= 2)",
+      "priority": null,
+      "repository": "CRAN",
+      "git": null
+    },
+    {
+      "package": "Rhdf5lib",
+      "version": "1.30.0",
+      "license": "Artistic-2.0",
+      "priority": null,
+      "repository": "Bioconductor 3.21",
+      "git": "e60e82a"
+    },
+    {
+      "package": "S4Vectors",
+      "version": "0.46.0",
+      "license": "Artistic-2.0",
+      "priority": null,
+      "repository": "Bioconductor 3.21",
+      "git": "f4a665d"
+    },
+    {
+      "package": "base",
+      "version": "4.5.1",
+      "license": "Part of R 4.5.1",
+      "priority": "base",
+      "repository": null,
+      "git": null
+    },
+    {
+      "package": "cli",
+      "version": "3.6.5",
+      "license": "MIT + file LICENSE",
+      "priority": null,
+      "repository": "CRAN",
+      "git": null
+    },
+    {
+      "package": "compiler",
+      "version": "4.5.1",
+      "license": "Part of R 4.5.1",
+      "priority": "base",
+      "repository": null,
+      "git": null
+    },
+    {
+      "package": "cpp11",
+      "version": "0.5.2",
+      "license": "MIT + file LICENSE",
+      "priority": null,
+      "repository": "CRAN",
+      "git": null
+    },
+    {
+      "package": "cytolib",
+      "version": "2.20.0",
+      "license": "AGPL-3.0-only",
+      "priority": null,
+      "repository": "Bioconductor 3.21",
+      "git": "262eb4a"
+    },
+    {
+      "package": "datasets",
+      "version": "4.5.1",
+      "license": "Part of R 4.5.1",
+      "priority": "base",
+      "repository": null,
+      "git": null
+    },
+    {
+      "package": "flowCore",
+      "version": "2.20.0",
+      "license": "Artistic-2.0",
+      "priority": null,
+      "repository": "Bioconductor 3.21",
+      "git": "c75a5ca"
+    },
+    {
+      "package": "generics",
+      "version": "0.1.4",
+      "license": "MIT + file LICENSE",
+      "priority": null,
+      "repository": "CRAN",
+      "git": null
+    },
+    {
+      "package": "grDevices",
+      "version": "4.5.1",
+      "license": "Part of R 4.5.1",
+      "priority": "base",
+      "repository": null,
+      "git": null
+    },
+    {
+      "package": "graphics",
+      "version": "4.5.1",
+      "license": "Part of R 4.5.1",
+      "priority": "base",
+      "repository": null,
+      "git": null
+    },
+    {
+      "package": "grid",
+      "version": "4.5.1",
+      "license": "Part of R 4.5.1",
+      "priority": "base",
+      "repository": null,
+      "git": null
+    },
+    {
+      "package": "jsonlite",
+      "version": "2.0.0",
+      "license": "MIT + file LICENSE",
+      "priority": null,
+      "repository": "CRAN",
+      "git": null
+    },
+    {
+      "package": "matrixStats",
+      "version": "1.5.0",
+      "license": "Artistic-2.0",
+      "priority": null,
+      "repository": "CRAN",
+      "git": null
+    },
+    {
+      "package": "methods",
+      "version": "4.5.1",
+      "license": "Part of R 4.5.1",
+      "priority": "base",
+      "repository": null,
+      "git": null
+    },
+    {
+      "package": "parallel",
+      "version": "4.5.1",
+      "license": "Part of R 4.5.1",
+      "priority": "base",
+      "repository": null,
+      "git": null
+    },
+    {
+      "package": "rlang",
+      "version": "1.1.6",
+      "license": "MIT + file LICENSE",
+      "priority": null,
+      "repository": "CRAN",
+      "git": null
+    },
+    {
+      "package": "splines",
+      "version": "4.5.1",
+      "license": "Part of R 4.5.1",
+      "priority": "base",
+      "repository": null,
+      "git": null
+    },
+    {
+      "package": "stats",
+      "version": "4.5.1",
+      "license": "Part of R 4.5.1",
+      "priority": "base",
+      "repository": null,
+      "git": null
+    },
+    {
+      "package": "stats4",
+      "version": "4.5.1",
+      "license": "Part of R 4.5.1",
+      "priority": "base",
+      "repository": null,
+      "git": null
+    },
+    {
+      "package": "tcltk",
+      "version": "4.5.1",
+      "license": "Part of R 4.5.1",
+      "priority": "base",
+      "repository": null,
+      "git": null
+    },
+    {
+      "package": "tools",
+      "version": "4.5.1",
+      "license": "Part of R 4.5.1",
+      "priority": "base",
+      "repository": null,
+      "git": null
+    },
+    {
+      "package": "utils",
+      "version": "4.5.1",
+      "license": "Part of R 4.5.1",
+      "priority": "base",
+      "repository": null,
+      "git": null
+    },
+    {
+      "package": "xml2",
+      "version": "1.3.8",
+      "license": "MIT + file LICENSE",
+      "priority": null,
+      "repository": "CRAN",
+      "git": null
+    }
+  ]
+}

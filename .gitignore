@@ -1,0 +1,14 @@
+node_modules/
+dist/
+src-tauri/target/
+.tools/
+artifacts/
+*.log
+release/
+test-results/
+playwright-report/
+src-tauri/runtime/R/
+src-tauri/runtime/WebView2/
+src-tauri/runtime/sources/
+
+output/

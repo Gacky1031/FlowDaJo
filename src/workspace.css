@@ -1,0 +1,214 @@
+.workspace {
+  overflow: auto;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.workspace-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.workspace-heading h1 {
+  font-size: 18px;
+  letter-spacing: -0.3px;
+  margin: 0 0 4px;
+  font-weight: 600;
+}
+.workspace-heading p {
+  margin: 0;
+  color: #83929d;
+  font-size: 11px;
+}
+.gate-tools {
+  display: flex;
+  gap: 5px;
+}
+.gate-tools button {
+  font-size: 11px;
+  padding: 6px 8px;
+}
+.plots {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.plot-card {
+  background: white;
+  border: 1px solid #d5e0e6;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.plot-card.selected {
+  border-color: #12919b;
+  box-shadow: 0 0 0 1px #12919b33;
+}
+.plot-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  border-bottom: 1px solid #edf1f4;
+  font-size: 11px;
+}
+.plot-head span:last-child {
+  font-size: 9px;
+  color: #8b99a3;
+}
+.plot-stage {
+  height: 246px;
+  position: relative;
+  touch-action: none;
+  cursor: crosshair;
+}
+.plot-stage canvas,
+.plot-stage svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.plot-stage svg {
+  overflow: visible;
+}
+.stats {
+  background: white;
+  border: 1px solid #d6e0e7;
+  border-radius: 6px;
+  overflow: auto;
+  min-height: 132px;
+}
+.stats-heading {
+  padding: 11px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  border-bottom: 1px solid #e8eef2;
+  display: flex;
+  justify-content: space-between;
+}
+.stats-heading span {
+  font-size: 10px;
+  font-weight: 400;
+  color: #8a9ba7;
+}
+.stats table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.stats th {
+  background: #f7f9fb;
+  color: #7b8c98;
+  font-weight: 500;
+  text-align: right;
+  padding: 8px 14px;
+  white-space: nowrap;
+}
+.stats td {
+  text-align: right;
+  padding: 8px 14px;
+  border-top: 1px solid #eef2f5;
+  white-space: nowrap;
+}
+.stats th:first-child,
+.stats td:first-child {
+  text-align: left;
+}
+.stats tr.selected td {
+  background: #eff8f8;
+  color: #087681;
+}
+.stats tr {
+  cursor: pointer;
+}
+.stats td:first-child {
+  font-weight: 500;
+}
+@media (max-height: 850px) {
+  .plot-stage {
+    height: 210px;
+  }
+  .workspace {
+    gap: 9px;
+    padding-top: 12px;
+  }
+  .section {
+    padding-bottom: 10px;
+  }
+  h2 {
+    margin-top: 16px;
+  }
+}
+.row input[type="checkbox"] {
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  flex: 0 0 16px !important;
+}
+#toggle-inspector {
+  display: none;
+}
+button {
+  white-space: nowrap;
+}
+.badge {
+  display: inline-block;
+  white-space: nowrap;
+}
+.workspace-heading {
+  flex-wrap: wrap;
+  gap: 10px;
+}
+@media (max-width: 1100px) {
+  #app .shell {
+    grid-template-columns: 180px minmax(0, 1fr);
+  }
+  .workspace {
+    min-width: 0;
+    padding: 14px;
+  }
+  .inspector {
+    display: none;
+  }
+  .inspector.drawer-open {
+    display: block;
+    position: fixed;
+    top: 112px;
+    bottom: 38px;
+    right: 0;
+    width: 280px;
+    z-index: 10;
+    box-shadow: -10px 0 24px #16344826;
+  }
+  #toggle-inspector {
+    display: block;
+  }
+  #app .toolbar {
+    padding: 0 10px;
+    gap: 5px;
+  }
+  .toolbar label,
+  #help {
+    display: none;
+  }
+  #app .toolbar input {
+    width: 130px;
+    flex: 1;
+  }
+  .toolbar button {
+    padding: 7px 8px;
+  }
+  .brand span {
+    display: none;
+  }
+  .runtime {
+    font-size: 9px;
+  }
+  .workspace-heading h1 {
+    font-size: 16px;
+  }
+  .plot-stage {
+    height: 240px;
+  }
+}

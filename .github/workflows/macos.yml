@@ -1,0 +1,45 @@
+name: Build macOS installers
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "src/**"
+      - "src-tauri/**"
+      - "r/**"
+      - "scripts/setup-r.R"
+      - "scripts/stage-r-runtime.R"
+      - ".github/workflows/macos.yml"
+
+jobs:
+  bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            arch: x64
+          - runner: macos-15
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install R and build prerequisites
+        run: brew install r pkg-config
+      - name: Install flowCore and stage the bundled R runtime
+        run: |
+          Rscript scripts/setup-r.R
+          Rscript scripts/stage-r-runtime.R
+      - name: Install JavaScript dependencies
+        run: npm ci
+      - name: Build DMG
+        run: npm run tauri build -- --config src-tauri/tauri.macos.conf.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FlowDesk-Tauri-macos-${{ matrix.arch }}
+          path: src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
