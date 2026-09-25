@@ -108,6 +108,7 @@ pub fn call(script: PathBuf, storage: PathBuf, mut payload: Value) -> Result<Val
         "import",
         "analyze",
         "worksheet",
+        "axis_preview",
         "worksheet_pdf",
         "worksheet_report_pdf",
         "statistics_csv",
@@ -161,5 +162,21 @@ pub fn call(script: PathBuf, storage: PathBuf, mut payload: Value) -> Result<Val
             .unwrap_or("R analysis failed")
             .into());
     }
-    Ok(result["data"].clone())
+    let mut data = result["data"].clone();
+    if payload["action"] == "worksheet_pdf" {
+        if let Some(page_files) = data["pageFiles"].as_array() {
+            let files: Vec<PathBuf> = page_files
+                .iter()
+                .filter_map(|value| value.as_str().map(PathBuf::from))
+                .collect();
+            let output = payload["path"].as_str().ok_or("Missing PDF output path")?;
+            let merged = super::pdf::merge_pages(&files, &PathBuf::from(output));
+            for file in files {
+                let _ = std::fs::remove_file(file);
+            }
+            merged?;
+            data.as_object_mut().map(|object| object.remove("pageFiles"));
+        }
+    }
+    Ok(data)
 }

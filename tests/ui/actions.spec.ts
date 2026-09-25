@@ -204,22 +204,11 @@ test("global gates appear and calculate for a second sample", async ({
 
 test("workspace focus, worksheet template and selectable report", async ({ page }) => {
   await start(page);
-  await page.locator("#toggle-browser").click();
-  await expect(page.locator(".browser")).not.toBeVisible();
-  await page.locator("#toggle-browser").click();
   await expect(page.locator(".browser")).toBeVisible();
-  const propertiesInitiallyVisible = await page.locator(".properties").isVisible();
   await page.locator("#toggle-properties").click();
-  await expect(page.locator(".properties")).toHaveJSProperty("hidden", false);
-  if (propertiesInitiallyVisible) {
-    await expect(page.locator(".properties")).not.toBeVisible();
-    await page.locator("#toggle-properties").click();
-    await expect(page.locator(".properties")).toBeVisible();
-  } else {
-    await expect(page.locator(".properties")).toBeVisible();
-    await page.locator("#toggle-properties").click();
-    await expect(page.locator(".properties")).not.toBeVisible();
-  }
+  await expect(page.locator("#properties-dialog")).toBeVisible();
+  await page.locator("#close-properties").click();
+  await expect(page.locator("#properties-dialog")).toHaveCount(0);
 
   await page.locator("#template").click();
   await expect(page.locator(".status")).toContainText("ワークシートテンプレートを保存しました");

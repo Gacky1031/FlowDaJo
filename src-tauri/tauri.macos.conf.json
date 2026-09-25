@@ -8,6 +8,7 @@
       "../r/core.R": "r/core.R",
       "../r/worker.R": "r/worker.R",
       "../r/worksheet.R": "r/worksheet.R",
+      "../r/diva.R": "r/diva.R",
       "runtime/R/": "runtime/R/",
       "runtime/r-manifest.json": "runtime/r-manifest.json",
       "runtime/WebView2Loader.dll": null,

@@ -76,8 +76,15 @@ display_limits <- function(v, axis) {
 worksheet <- function(req) {
   p <- check_project(req$project)
   cards <- req$plots %||% list()
+  widgets <- req$widgets %||% list()
   result <- list(); stats <- list(); errors <- list()
-  needed <- unique(c(req$sampleId, vapply(cards,function(card) if(identical(card$sampleId,"active")) req$sampleId else card$sampleId,"")))
+  card_samples <- vapply(cards,function(card) if(identical(card$sampleId,"active")) req$sampleId else card$sampleId,"")
+  widget_samples <- vapply(widgets,function(widget) {
+    id <- widget$reportSampleId %||% widget$sampleId
+    if(is.null(id)||identical(id,"active")) req$sampleId else id
+  },"")
+  needed <- unique(c(req$sampleId,card_samples,widget_samples))
+  needed <- needed[nzchar(needed)]
   for (id in needed) {
     subset <- Filter(function(card) identical(if(identical(card$sampleId,"active")) req$sampleId else card$sampleId,id),cards)
     tryCatch({
@@ -93,27 +100,63 @@ worksheet <- function(req) {
   }
   list(plots=result,stats=stats,errors=errors,workerPid=Sys.getpid())
 }
+axis_preview <- function(req) {
+  p <- check_project(req$project)
+  s <- Filter(function(item) identical(item$id, req$sampleId), p$samples)
+  if (length(s) != 1L) fail("Sample not found")
+  entry <- session_analysis(p, s[[1]], req$storage)
+  gate_id <- resolve_population(entry$gates, req$population %||% list())
+  values <- cached_axis(entry, req$axis)[entry$masks[[gate_id]]]
+  range <- display_limits(values, req$axis)
+  if(identical(req$axis$scale,"log"))values[!is.finite(values)] <- range[1]
+  visible <- values[is.finite(values) & values >= range[1] & values <= range[2]]
+  breaks <- seq(range[1], range[2], length.out=65L)
+  counts <- hist(visible, breaks=breaks, plot=FALSE, include.lowest=TRUE)$counts
+  list(range=as.list(range), counts=I(counts), ticks=axis_ticks(req$axis, range),
+       total=length(values), outside=sum(!is.finite(values) | values < range[1] | values > range[2]))
+}
 # v0.4 rendering -----------------------------------------------------------
+superscript_digits <- c("⁰", "¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹")
+superscript_integer <- function(value) {
+  digits <- strsplit(as.character(abs(as.integer(value))), "", fixed = TRUE)[[1]]
+  paste0(if (value < 0) "⁻" else "", superscript_digits[as.integer(digits) + 1L], collapse = "")
+}
+axis_tick_label <- function(value) {
+  if (!is.finite(value)) return("")
+  magnitude <- abs(value)
+  sign <- if (value < 0) "−" else ""
+  if (magnitude >= 1000 || (magnitude > 0 && magnitude < .01)) {
+    exponent <- floor(log10(magnitude))
+    mantissa <- signif(magnitude / 10^exponent, 2)
+    if (mantissa >= 10) { exponent <- exponent + 1L; mantissa <- 1 }
+    coefficient <- if (abs(mantissa - 1) < 1e-10) "" else
+      paste0(format(mantissa, scientific = FALSE, trim = TRUE), "×")
+    return(paste0(sign, coefficient, "10", superscript_integer(exponent)))
+  }
+  format(round(value, if (magnitude < 10) 2 else 0), big.mark = ",",
+         trim = TRUE, scientific = FALSE)
+}
 axis_ticks <- function(axis, display_range) {
   scale <- axis$scale %||% "linear"
   if (identical(scale, "log")) {
-    lo <- ceiling(display_range[1]); hi <- floor(display_range[2])
-    at <- if(lo<=hi) seq(lo,hi) else numeric()
-    if (!length(at)) at <- mean(display_range)
-    raw <- 10^at
+    decades <- seq(floor(display_range[1]), ceiling(display_range[2]))
+    raw <- as.vector(outer(10^decades, 1:9, `*`))
+    at <- log10(raw)
+    major <- rep(1:9 == 1, each=length(decades))
   } else if (identical(scale, "logicle")) {
     tr <- logicleTransform(w=axis$w %||% .5,t=axis$t %||% 262144,m=axis$m %||% 4.5,a=axis$a %||% 0)
-    top <- max(1,axis$t %||% 262144); decades <- 0:ceiling(log10(top*10))
-    raw <- unique(c(-rev(10^decades),0,10^decades))
+    top <- max(1,axis$t %||% 262144); decades <- 0:ceiling(log10(top))
+    positive <- as.vector(outer(10^decades,1:9,`*`))
+    raw <- c(-positive,0,positive)
+    major <- c(rep(1:9 == 1,each=length(decades)),TRUE,rep(1:9 == 1,each=length(decades)))
     at <- tr(raw)
-    keep <- is.finite(at) & at >= display_range[1] & at <= display_range[2]
-    raw <- raw[keep]; at <- at[keep]
-  } else { at <- pretty(display_range,n=6); raw <- at }
-  label <- vapply(raw,function(v) {
-    if(abs(v)>=1e5 || (abs(v)>0 && abs(v)<.01)) format(v,scientific=TRUE,digits=2,trim=TRUE)
-    else format(round(v,if(abs(v)<10) 2 else 0),big.mark=",",trim=TRUE,scientific=FALSE)
-  },"")
-  lapply(seq_along(at),function(i) list(value=unname(at[i]),label=label[i]))
+  } else { at <- pretty(display_range,n=6); raw <- at; major <- rep(TRUE,length(at)) }
+  keep <- is.finite(at) & at >= display_range[1] & at <= display_range[2]
+  raw <- raw[keep]; at <- at[keep]; major <- major[keep]
+  label <- if(identical(scale,"linear"))
+    vapply(raw,function(v) format(signif(v,4),big.mark=",",trim=TRUE,scientific=FALSE),"")
+    else ifelse(major,vapply(raw,axis_tick_label,""),"")
+  lapply(seq_along(at),function(i) list(value=unname(at[i]),label=label[i],major=major[i]))
 }
 
 smooth_grid <- function(z) {
@@ -153,11 +196,14 @@ worksheet_plot <- function(entry, card, s) {
   if(!is.null(card$bins) && (length(card$bins)!=1 || !is.finite(card$bins) || card$bins<16 || card$bins>512))fail("Bins must be between 16 and 512")
   if(!is.null(card$dotSize) && (!is.finite(card$dotSize)||card$dotSize<.5||card$dotSize>8))fail("Dot size must be between 0.5 and 8")
   if(!is.null(card$dotOpacity) && (!is.finite(card$dotOpacity)||card$dotOpacity<.05||card$dotOpacity>1))fail("Dot opacity must be between 0.05 and 1")
-  finite_axes <- if(mode %in% c("histogram","cdf")) is.finite(x[pool]) else is.finite(x[pool])&is.finite(y[pool])
+  render_x <- x; render_y <- y
+  if(identical(card$x$scale,"log"))render_x[!is.finite(render_x)] <- xr[1]
+  if(identical(card$y$scale,"log"))render_y[!is.finite(render_y)] <- yr[1]
+  finite_axes <- if(mode %in% c("histogram","cdf")) is.finite(x[pool]) else is.finite(render_x[pool])&is.finite(render_y[pool])
   excluded <- sum(!finite_axes)
   in_view <- finite_axes & x[pool]>=xr[1] & x[pool]<=xr[2]
   if(!mode %in% c("histogram","cdf")) in_view <- in_view & y[pool]>=yr[1] & y[pool]<=yr[2]
-  visible <- pool[in_view]; shown_count <- length(visible)
+  visible <- pool[finite_axes]; shown_count <- length(visible)
   max_points <- 12000L; index <- if(length(visible)>max_points) visible[unique(round(seq(1,length(visible),length.out=max_points)))] else visible
   histogram <- NULL; cdf <- NULL; density <- NULL; point_density <- numeric()
   if(mode=="histogram") {
@@ -173,16 +219,65 @@ worksheet_plot <- function(entry, card, s) {
     cdf <- list(x=I(values),y=I(if(length(values)) 100*seq_along(values)/length(values) else numeric()),condition="selected events with finite x inside xRange")
     yr <- c(0,100); shown_count <- length(values); index <- integer()
   } else if(mode %in% c("density","contour","pseudocolor","zebra")) {
-    dg <- density_grid(x[pool],y[pool],xr,yr,card$bins %||% 128L,card$smoothing %||% TRUE,card$contourPercent %||% 10)
+    dg <- density_grid(pmax(xr[1],pmin(xr[2],render_x[pool])),pmax(yr[1],pmin(yr[2],render_y[pool])),xr,yr,card$bins %||% 128L,card$smoothing %||% TRUE,card$contourPercent %||% 10)
     density <- dg[c("x","y","z","levels","massFractions","contours")]
     if(length(index)) {
-      xi <- pmin(length(dg$x),pmax(1L,floor((x[index]-xr[1])/diff(xr)*length(dg$x))+1L)); yi <- pmin(length(dg$y),pmax(1L,floor((y[index]-yr[1])/diff(yr)*length(dg$y))+1L))
+      xi <- pmin(length(dg$x),pmax(1L,floor((render_x[index]-xr[1])/diff(xr)*length(dg$x))+1L)); yi <- pmin(length(dg$y),pmax(1L,floor((render_y[index]-yr[1])/diff(yr)*length(dg$y))+1L))
       point_density <- dg$.matrix[cbind(xi,yi)]
     }
   }
+  same_axis <- function(a,b) identical(a[c("channel","scale","w","t","m","a")],b[c("channel","scale","w","t","m","a")])
+  axis_eligible <- function(g) {
+    sample_ok <- identical(g$sampleId,s$id)||identical(g$scope,"global")
+    if(!sample_ok || !same_axis(g$x,card$x))return(FALSE)
+    if(mode %in% c("histogram","cdf"))return(identical(g$type,"range"))
+    !identical(g$type,"range") && same_axis(g$y,card$y)
+  }
+  eligible_gates <- Filter(axis_eligible,entry$gates)
+  eligible_ids <- vapply(eligible_gates,function(g)g$id,"")
+  is_descendant <- function(g) {
+    current <- g
+    repeat {
+      parent_id <- current$parent
+      if(identical(parent_id,gate_id))return(TRUE)
+      if(is.null(parent_id)||identical(parent_id,"root"))return(identical(gate_id,"root"))
+      parent <- Filter(function(candidate)identical(candidate$id,parent_id),entry$gates)
+      if(!length(parent))return(FALSE)
+      current <- parent[[1]]
+    }
+  }
+  display_ids <- if(is.null(card$displayGates))
+    vapply(Filter(is_descendant,eligible_gates),function(g)g$id,"") else
+      intersect(as.character(unlist(card$displayGates)),eligible_ids)
+  color_gates <- Filter(is_descendant,entry$gates)
+  gate_depth <- function(g) {
+    depth <- 1L
+    parent_id <- g$parent
+    while(!is.null(parent_id)&&!identical(parent_id,"root")) {
+      parent <- Filter(function(candidate)identical(candidate$id,parent_id),entry$gates)
+      if(!length(parent))break
+      depth <- depth+1L
+      parent_id <- parent[[1]]$parent
+    }
+    depth
+  }
+  population_gate <- if(identical(gate_id,"root")) NULL else {
+    matches <- Filter(function(g)identical(g$id,gate_id),entry$gates)
+    if(length(matches)) matches[[1]] else NULL
+  }
+  base_color <- population_gate$color %||% card$color %||% "#146b8c"
+  point_colors <- rep(base_color,length(index))
+  deepest_depth <- rep(if(is.null(population_gate)) 0L else gate_depth(population_gate),length(index))
+  if(length(color_gates) && mode=="scatter") for(gate in color_gates) {
+    membership <- entry$masks[[gate$id]][index]
+    depth <- gate_depth(gate)
+    replace <- membership & depth >= deepest_depth
+    point_colors[replace] <- gate$color %||% "#17699b"
+    deepest_depth[replace] <- depth
+  }
   list(id=card$id,x=card$x,y=card$y,mode=mode,sampleId=s$id,sampleName=s$name,gateId=gate_id,
        xRange=as.list(xr),yRange=as.list(yr),xTicks=axis_ticks(card$x,xr),yTicks=if(mode %in% c("histogram","cdf")) list() else axis_ticks(card$y,yr),
-       points=list(),xValues=I(if(length(index)) unname(x[index]) else numeric()),yValues=I(if(length(index)) unname(y[index]) else numeric()),pointDensity=I(point_density),
+       points=list(),xValues=I(if(length(index)) unname(render_x[index]) else numeric()),yValues=I(if(length(index)) unname(render_y[index]) else numeric()),pointDensity=I(point_density),pointColors=I(point_colors),displayGateIds=as.list(display_ids),
        histogram=histogram,cdf=cdf,density=density,shown=if(mode %in% c("density","contour","pseudocolor","zebra","histogram","cdf")) shown_count else length(index),total=length(pool),excluded=excluded,
        dotSize=card$dotSize %||% 1.6,dotOpacity=card$dotOpacity %||% .6,color=card$color %||% "#146b8c",smoothing=card$smoothing %||% TRUE,showOutliers=card$showOutliers %||% TRUE,
        contourPercent=card$contourPercent %||% 10,bins=card$bins %||% 128,histogramNormalize=card$histogramNormalize %||% "count",compensationEnabled=isTRUE(s$compensation$enabled),compensation=s$compensation)
@@ -212,17 +307,35 @@ export_statistics_csv <- function(req) {
   if(!file.rename(tmp,req$path)) { if(!file.copy(tmp,req$path,overwrite=TRUE)) fail("Cannot write statistics CSV"); unlink(tmp) }; list(path=normalizePath(req$path,winslash="/"),rows=length(records))
 }
 
-spaced_ticks <- function(ticks,range,minimum=.12) {
+spaced_ticks <- function(ticks,range,side=1,cex=.72) {
   if(!length(ticks))return(ticks)
-  pos<-vapply(ticks,function(t)t$value,0);valid<-which(pos>=range[1]&pos<=range[2]);if(!length(valid))return(list())
-  zero<-valid[vapply(ticks[valid],function(t)identical(t$label,"0"),FALSE)]; chosen<-zero
-  for(i in valid) if(!length(chosen)||all(abs(pos[i]-pos[chosen])/diff(range)>minimum))chosen<-c(chosen,i)
-  ticks[sort(unique(chosen))]
+  values<-vapply(ticks,function(t)t$value,0)
+  valid<-which(values>=range[1]&values<=range[2]&vapply(ticks,function(t)nzchar(t$label),FALSE))
+  if(!length(valid))return(list())
+  valid<-valid[order(values[valid])]
+  available<-par("pin")[[side]]
+  centers<-(values[valid]-range[1])/diff(range)*available
+  labels<-vapply(ticks[valid],function(t)t$label,"")
+  sizes<-if(side==1)strwidth(labels,cex=cex,units="inches") else strheight(labels,cex=cex,units="inches")
+  chosen<-integer()
+  for(i in seq_along(valid)) {
+    if(!length(chosen)||centers[i]-centers[tail(chosen,1)] >= (sizes[i]+sizes[tail(chosen,1)])/2+.09)
+      chosen<-c(chosen,i)
+  }
+  ticks[valid[chosen]]
 }
-draw_ticks <- function(d,mode) {
-  xt<-spaced_ticks(d$xTicks,unlist(d$xRange));yt<-spaced_ticks(d$yTicks,unlist(d$yRange),.085)
-  axis(1,at=vapply(xt,function(t)t$value,0),labels=vapply(xt,function(t)t$label,""),las=1,cex.axis=.72)
-  if(!mode %in% c("histogram","cdf")) axis(2,at=vapply(yt,function(t)t$value,0),labels=vapply(yt,function(t)t$label,""),las=1,cex.axis=.72) else axis(2,las=1,cex.axis=.72)
+draw_ticks <- function(d,mode,show_x=TRUE,compact=FALSE) {
+  cex<-if(compact).58 else .68
+  xt<-spaced_ticks(d$xTicks,unlist(d$xRange),1,cex)
+  yt<-spaced_ticks(d$yTicks,unlist(d$yRange),2,cex)
+  if(show_x) {
+    minor<-Filter(function(t)!nzchar(t$label),d$xTicks)
+    if(length(minor))axis(1,at=vapply(minor,function(t)t$value,0),labels=FALSE,tcl=-.2)
+    axis(1,at=vapply(xt,function(t)t$value,0),labels=vapply(xt,function(t)t$label,""),las=1,cex.axis=cex)
+  }
+  minor_y<-Filter(function(t)!nzchar(t$label),d$yTicks)
+  if(length(minor_y))axis(2,at=vapply(minor_y,function(t)t$value,0),labels=FALSE,tcl=-.2)
+  if(!mode %in% c("histogram","cdf")) axis(2,at=vapply(yt,function(t)t$value,0),labels=vapply(yt,function(t)t$label,""),las=1,cex.axis=cex) else axis(2,las=1,cex.axis=cex)
 }
 heat_colors <- function(values, points=FALSE) {
   good<-sort(values[is.finite(values)]);if(!length(good))return(rep("white",length(values)))
@@ -231,11 +344,15 @@ heat_colors <- function(values, points=FALSE) {
   ramp<-colorRamp(c(if(points)"#345b9e" else "#f6f8fa","#2f86a7","#209e70","#f4be30","#c4302b"))
   rgb(ramp(q),maxColorValue=255)
 }
-draw_card <- function(card,d) {
+draw_card <- function(card,d,compact=FALSE) {
   mode<-d$mode;hist_label<-switch(d$histogramNormalize,count="Count",percent="% of events",mode="% of maximum","Count")
-  plot(NA,xlim=unlist(d$xRange),ylim=unlist(d$yRange),axes=FALSE,xaxs="i",yaxs="i",xlab=card$x$channel,ylab=if(mode=="histogram")hist_label else if(mode=="cdf")"Cumulative %" else card$y$channel,main=NULL)
+  plot(NA,xlim=unlist(d$xRange),ylim=unlist(d$yRange),axes=FALSE,xaxs="i",yaxs="i",xlab="",ylab="",main=NULL)
   col<-d$color;alpha<-d$dotOpacity;den<-d$density;pd<-unlist(d$pointDensity)
   xs<-unlist(d$xValues);ys<-unlist(d$yValues)
+  if(mode %in% c("scatter","pseudocolor","density","contour","zebra")) {
+    xs<-pmax(unlist(d$xRange)[1],pmin(unlist(d$xRange)[2],xs))
+    ys<-pmax(unlist(d$yRange)[1],pmin(unlist(d$yRange)[2],ys))
+  }
   if(mode=="histogram") {e<-unlist(d$histogram$edges);v<-unlist(d$histogram$counts);polygon(c(e[1],rep(e,each=2)[-c(1,2*length(e))],tail(e,1)),c(0,rep(v,each=2),0),col=col,border=NA)}
   else if(mode=="cdf") {if(length(d$cdf$x))lines(unlist(d$cdf$x),unlist(d$cdf$y),type="s",col=col,lwd=1.3)}
   else if(mode %in% c("density","zebra")) {
@@ -243,33 +360,111 @@ draw_card <- function(card,d) {
     keep<-which(z>0);cols<-if(mode=="density")heat_colors(z) else ifelse(findInterval(z,unlist(den$levels))%%2,"#dcecf0","#f7fafb")
     if(length(keep)){xx<-rep(unlist(den$x),ny);yy<-rep(unlist(den$y),each=nx);rect(xx[keep]-dx/2,yy[keep]-dy/2,xx[keep]+dx/2,yy[keep]+dy/2,col=cols[keep],border=NA)}
   } else if(mode=="pseudocolor") {if(length(xs))points(xs,ys,pch=16,cex=d$dotSize/5,col=adjustcolor(heat_colors(pd,TRUE),alpha.f=alpha+(1-alpha)*.45))}
-  else if(mode=="scatter" && length(xs))points(xs,ys,pch=16,cex=d$dotSize/5,col=adjustcolor(col,alpha.f=alpha))
+  else if(mode=="scatter" && length(xs)) {
+    point_colors<-unlist(d$pointColors %||% character(),use.names=FALSE)
+    if(length(point_colors)!=length(xs))point_colors<-rep("",length(xs))
+    point_colors[!nzchar(point_colors)]<-col
+    points(xs,ys,pch=16,cex=d$dotSize/5,col=adjustcolor(point_colors,alpha.f=alpha))
+  }
   if(mode %in% c("contour","zebra"))for(line in den$contours)lines(unlist(line$x),unlist(line$y),col=col,lwd=.8)
   if(mode %in% c("contour","density","zebra") && isTRUE(d$showOutliers) && length(den$levels) && length(xs)) {
     keep<-is.finite(pd)&pd<min(unlist(den$levels));if(any(keep))points(xs[keep],ys[keep],pch=16,cex=d$dotSize/5,col=adjustcolor(col,alpha.f=alpha))
   }
-  draw_ticks(d,mode)
-  box(bty="l")
-  mtext(substr(d$sampleName,1,45),side=3,line=2.3,cex=.8,font=2)
-  mtext(substr(paste(c("All events",unlist(card$population)),collapse=" / "),1,55),side=3,line=1.2,cex=.7)
-  mtext(sprintf("N = %s%s",format(d$total,big.mark=","),if(d$excluded)sprintf(" | %s outside transform",format(d$excluded,big.mark=","))else""),side=3,line=.15,cex=.6)
+  draw_ticks(d,mode,!isFALSE(card$showXAxis),compact)
+  if(!isFALSE(card$showXAxis))mtext(card$x$channel,side=1,line=if(compact)2.1 else 2.6,cex=if(compact).62 else .74)
+  mtext(if(mode=="histogram")hist_label else if(mode=="cdf")"Cumulative %" else card$y$channel,side=2,line=if(compact)2.35 else 2.9,cex=if(compact).62 else .74)
+  if(!isFALSE(card$showXAxis))box(bty="l") else segments(unlist(d$xRange)[1],unlist(d$yRange)[1],unlist(d$xRange)[1],unlist(d$yRange)[2])
+  if(compact) {
+    mtext(substr(paste(d$sampleName,if(!isFALSE(card$showGateNames))paste(unlist(card$population),collapse=" / ")else""),1,48),side=3,line=.5,cex=.55,font=2)
+  } else {
+    mtext(substr(d$sampleName,1,45),side=3,line=2.3,cex=.8,font=2)
+    if(!isFALSE(card$showGateNames))mtext(substr(paste(c("All events",unlist(card$population)),collapse=" / "),1,55),side=3,line=1.2,cex=.7)
+    mtext(sprintf("N = %s%s",format(d$total,big.mark=","),if(d$excluded)sprintf(" | %s outside transform",format(d$excluded,big.mark=","))else""),side=3,line=.15,cex=.6)
+  }
 }
 
-draw_child_gates <- function(card,d,project,print_opts=list(),statistics=list()) {
-  show_name <- isTRUE(print_opts$showGateNames)
-  show_pct <- isTRUE(print_opts$showGatePercentages)
+draw_child_gates <- function(card,d,project,statistics=list()) {
+  show_name <- !isFALSE(card$showGateNames)
+  show_pct <- !isFALSE(card$showGatePercentages)
   gate_label <- function(g) { row<-Filter(function(x) identical(x$id,g$id),statistics); pct<-if(length(row)) row[[1]]$percentParent else NULL; paste0(if(show_name) g$name else "",if(show_pct && !is.null(pct)) paste0(if(show_name) " · " else "",sprintf("%.1f%%",pct)) else "") }
   gate_col <- function(g) g$color %||% "#303e48"
   same_axis <- function(a,b) identical(a[c("channel","scale","w","t","m","a")],b[c("channel","scale","w","t","m","a")])
-  for(g in Filter(function(g) (identical(g$sampleId,d$sampleId)||identical(g$scope,"global"))&&identical(g$parent,d$gateId),project$gates %||% list())) {
+  shown_ids<-unlist(d$displayGateIds %||% list(),use.names=FALSE)
+  for(g in Filter(function(g) g$id %in% shown_ids&&(identical(g$sampleId,d$sampleId)||identical(g$scope,"global")),project$gates %||% list())) {
     if(!same_axis(g$x,card$x)) next
     if(g$type=="range") { if(d$mode %in% c("histogram","cdf")){b<-unlist(g$bounds);xr<-unlist(d$xRange);if(b[2]<xr[1]||b[1]>xr[2])next;b<-pmax(xr[1],pmin(xr[2],b));yr<-unlist(d$yRange);y<-yr[2]-.12*diff(yr);lines(c(b[1],b[1],b[2],b[2]),c(y-.02*diff(yr),y,y,y-.02*diff(yr)),col=gate_col(g),lwd=1.1);xr<-unlist(d$xRange);if(show_name||show_pct) text(mean(pmax(xr[1],pmin(xr[2],b))),y+.035*diff(yr),gate_label(g),cex=.65,col=gate_col(g))};next }
     if(d$mode %in% c("histogram","cdf")) next
     if(!same_axis(g$y,card$y)) next
     if(g$type=="rectangle") {b<-unlist(g$bounds);rect(b[1],b[3],b[2],b[4],border=gate_col(g),lwd=1.1);if(show_name||show_pct) text(b[1],b[4],gate_label(g),adj=c(0,0),cex=.65,col=gate_col(g))}
-    if(g$type=="polygon") polygon(matrix_from(g$vertices),border=gate_col(g),lwd=1.1);if(show_name||show_pct) {v<-matrix_from(g$vertices);text(v[1,1],v[1,2],gate_label(g),adj=c(0,0),cex=.65,col=gate_col(g))}
+    if(g$type=="polygon") {polygon(matrix_from(g$vertices),border=gate_col(g),lwd=1.1);if(show_name||show_pct) {v<-matrix_from(g$vertices);text(v[1,1],v[1,2],gate_label(g),adj=c(0,0),cex=.65,col=gate_col(g))}}
     if(g$type=="quadrant") abline(v=g$center[[1]],h=g$center[[2]],col=gate_col(g),lwd=1.1)
     if(g$type=="ellipse") {b<-unlist(g$bounds);th<-seq(0,2*pi,length.out=181);lines(mean(b[1:2])+diff(b[1:2])/2*cos(th),mean(b[3:4])+diff(b[3:4])/2*sin(th),col=gate_col(g),lwd=1.1);if(show_name||show_pct) text(b[1],b[4],gate_label(g),adj=c(0,0),cex=.65,col=gate_col(g))}
+  }
+}
+
+statistics_population_key <- function(id, gates) {
+  path <- character()
+  while(!is.null(id) && id != "root") {
+    gate <- gates[[match(id,vapply(gates,function(item)item$id,""))]]
+    if(is.null(gate)) break
+    path <- c(gate$name,path)
+    id <- gate$parent
+  }
+  as.character(jsonlite::toJSON(path,auto_unbox=FALSE))
+}
+visible_widget_statistics <- function(widget, statistics, gates=list()) {
+  hidden <- unlist(widget$hiddenPopulationPaths %||% list(),use.names=FALSE)
+  if(!length(hidden)) return(statistics)
+  Filter(function(row) !statistics_population_key(row$id,gates) %in% hidden,statistics)
+}
+fit_pdf_text <- function(value,width,cex=.7) {
+  value<-as.character(value %||% "")
+  if(!nzchar(value)||strwidth(value,cex=cex)<=width)return(value)
+  chars<-nchar(value,type="chars")
+  while(chars>1 && strwidth(paste0(substr(value,1,chars),"…"),cex=cex)>width)
+    chars<-chars-1L
+  paste0(substr(value,1,chars),"…")
+}
+draw_statistics_widget <- function(widget, statistics, sample_name, gates=list()) {
+  statistics <- visible_widget_statistics(widget,statistics,gates)
+  show_events <- !identical(widget$showEvents,FALSE)
+  show_parent <- !identical(widget$showPercentParent,FALSE)
+  show_total <- !identical(widget$showPercentTotal,FALSE)
+  mfi_channels <- unlist(widget$mfiChannels %||% list(),use.names=FALSE)
+  columns <- c(if(show_events) "Events",if(show_parent) "% Parent",if(show_total) "% Total",
+    if(length(mfi_channels))paste("MFI",mfi_channels,sep=" · "))
+  values_for <- function(row) {
+    values <- c(if(show_events) format(row$count,big.mark=",",scientific=FALSE),
+      if(show_parent) if(is.null(row$percentParent)) "NA" else sprintf("%.2f",row$percentParent),
+      if(show_total) if(is.null(row$percentTotal)) "NA" else sprintf("%.2f",row$percentTotal))
+    if(length(mfi_channels)) values <- c(values,vapply(mfi_channels,function(channel) {
+      value <- row$medians[[channel]]
+      if(is.null(value)||!is.finite(value)) "NA" else format(signif(value,4),scientific=FALSE,trim=TRUE)
+    },""))
+    values
+  }
+  plot.new();plot.window(xlim=c(0,1),ylim=c(0,1),xaxs="i",yaxs="i")
+  title(main=fit_pdf_text(paste("Population statistics |",sample_name),.95,.72),cex.main=.72)
+  count<-length(columns)
+  name_end<-if(count) max(.29,min(.53,.66-.047*count)) else .98
+  cell_width<-if(count)(.98-name_end)/count else 0
+  right<-if(count) name_end+seq_len(count)*cell_width else numeric()
+  header_cex<-max(.43,min(.68,.76-.035*count))
+  text(.02,.91,"Population",adj=0,font=2,cex=header_cex)
+  if(count) for(j in seq_len(count))
+    text(right[j],.91,fit_pdf_text(columns[j],cell_width-.014,header_cex),adj=1,font=2,cex=header_cex)
+  segments(.02,.865,.98,.865,col="#ccd8df",lwd=.6)
+  if(length(statistics)) {
+    step<-.78/max(length(statistics),4)
+    cex<-max(.34,min(.72,step*5.4))
+    for(i in seq_along(statistics)) {
+      row<-statistics[[i]]
+      y<-.84-(i-1)*step
+      text(.02,y,fit_pdf_text(row$name,name_end-.04,cex),adj=0,cex=cex)
+      vals<-values_for(row)
+      if(length(vals)) for(j in seq_along(vals))
+        text(right[j],y,fit_pdf_text(vals[j],cell_width-.014,cex),adj=1,cex=cex)
+    }
   }
 }
 
@@ -280,8 +475,16 @@ draw_statistics_pages <- function(req) {
     entry<-session_analysis(req$project,s,req$storage); statistics<-entry$stats
     if(include_stats) for(chunk in split(statistics,ceiling(seq_along(statistics)/18))) {
       par(mfrow=c(1,1),mar=c(3,3,4,3));plot.new();plot.window(xlim=c(0,1),ylim=c(0,1));title(paste("Population statistics |",s$name))
-      text(c(.02,.55,.72,.88),.95,c("Population","Events","% parent","% total"),adj=0,font=2); y<-.90
-      for(row in chunk) { text(.02,y,substr(row$name,1,42),adj=0,cex=.8); text(c(.55,.72,.88),y,c(format(row$count,big.mark=","),if(is.null(row$percentParent))"NA"else sprintf("%.2f",row$percentParent),if(is.null(row$percentTotal))"NA"else sprintf("%.2f",row$percentTotal)),adj=0,cex=.8); y<-y-.042 }
+      text(.02,.95,"Population",adj=0,font=2,cex=.8)
+      text(c(.61,.79,.98),rep(.95,3),c("Events","% parent","% total"),adj=1,font=2,cex=.8)
+      y<-.90
+      for(row in chunk) {
+        text(.02,y,fit_pdf_text(row$name,.46,.8),adj=0,cex=.8)
+        text(c(.61,.79,.98),rep(y,3),c(format(row$count,big.mark=","),
+          if(is.null(row$percentParent))"NA"else sprintf("%.2f",row$percentParent),
+          if(is.null(row$percentTotal))"NA"else sprintf("%.2f",row$percentTotal)),adj=1,cex=.8)
+        y<-y-.042
+      }
     }
     if(include_comp) {
       config<-s$compensation; channels<-unlist(config$channels); values<-matrix_from(config$values)*100
@@ -294,22 +497,128 @@ draw_statistics_pages <- function(req) {
   }
 }
 
+# A worksheet PDF uses the same A4 rectangles shown on the canvas. Cairo's
+# device size is fixed for a document, so pages are rendered separately and
+# merged by the bundled Rust host when both orientations are present.
+export_print_pages <- function(req,data,cards,widgets) {
+  pages <- req$printPages %||% list(list(left=0,top=0,orientation="landscape"))
+  if(!length(pages)) pages <- list(list(left=0,top=0,orientation="landscape"))
+  elements <- c(lapply(cards,function(value)list(kind="plot",value=value)),
+                lapply(widgets,function(value)list(kind="statistics",value=value)))
+  width_of <- function(item) item$value$width %||% if(identical(item$kind,"statistics"))640 else 344
+  height_of <- function(item) item$value$height %||% if(identical(item$kind,"statistics"))340 else 314
+  files <- character(); success <- FALSE; printed <- character()
+  on.exit(if(!success && length(files))unlink(files),add=TRUE)
+  for(page in pages) {
+    portrait <- identical(page$orientation,"portrait")
+    scale <- page$scale %||% 1
+    width <- (if(portrait)794 else 1123)*scale
+    height <- (if(portrait)1123 else 794)*scale
+    safe_margin <- 16*scale
+    left <- page$left %||% 0; top <- page$top %||% 0
+    page_items <- Filter(function(item) {
+      box <- item$value
+      (box$left %||% 0) >= left+safe_margin && (box$top %||% 0) >= top+safe_margin &&
+        (box$left %||% 0)+width_of(item) <= left+width-safe_margin &&
+        (box$top %||% 0)+height_of(item) <= top+height-safe_margin
+    },elements)
+    page_items <- page_items[order(vapply(page_items,function(item)item$value$top %||% 0,0),
+      vapply(page_items,function(item)item$value$left %||% 0,0))]
+    file <- tempfile(pattern="flowdesk-page-",tmpdir=dirname(req$path),fileext=".pdf")
+    files <- c(files,file)
+    grDevices::cairo_pdf(file,width=if(portrait)210/25.4 else 297/25.4,
+      height=if(portrait)297/25.4 else 210/25.4,onefile=TRUE,
+      family=if(.Platform$OS.type=="windows")"Yu Gothic" else "sans")
+    tryCatch({
+      if(!length(page_items)) {
+        plot.new()
+      } else for(i in seq_along(page_items)) {
+        item <- page_items[[i]]; value <- item$value
+        x1 <- (value$left-left)/width; x2 <- (value$left+width_of(item)-left)/width
+        y1 <- (value$top-top)/height; y2 <- (value$top+height_of(item)-top)/height
+        physical_width <- width_of(item)/width*(if(portrait)210/25.4 else 297/25.4)
+        compact <- physical_width < 3.7
+        par(fig=c(x1,x2,1-y2,1-y1),new=i>1,
+          mar=if(identical(item$kind,"statistics"))c(.7,.7,1.4,.45)
+          else if(compact)c(2.8,3.3,1.9,.5) else c(3.2,3.8,2.5,.7))
+        if(identical(item$kind,"plot")) {
+          d <- data$plots[[value$id]]
+          draw_card(value,d,compact)
+          draw_child_gates(value,d,req$project,data$stats[[d$sampleId]] %||% list())
+        } else {
+          stats_id <- value$sampleId
+          if(is.null(stats_id)||identical(stats_id,"active"))stats_id <- req$sampleId
+          matched <- Filter(function(s)identical(s$id,stats_id),req$project$samples)
+          name <- if(length(matched))matched[[1]]$name else "Selected sample"
+          draw_statistics_widget(value,data$stats[[stats_id]] %||% list(),name,req$project$gates %||% list())
+        }
+        printed <- c(printed,value$id)
+      }
+    },finally=dev.off())
+  }
+  success <- TRUE
+  list(path=req$path,pageFiles=as.list(files),pages=length(files),
+       plots=sum(vapply(cards,function(card)card$id %in% printed,FALSE)),
+       outside=sum(!vapply(elements,function(item)item$value$id %in% printed,FALSE)))
+}
+
 export_vector <- function(req,kind=c("pdf","svg"),single=FALSE) {
   kind<-match.arg(kind); ext<-paste0("\\.",kind,"$"); if(!grepl(ext,req$path,ignore.case=TRUE)) fail(paste(toupper(kind),"output has wrong extension"))
   include_plots <- !identical(req$includePlots, FALSE)
+  include_widgets <- isTRUE(req$includeWidgets) && !single
   data<-worksheet(req); if(length(data$errors)) fail(paste(unlist(data$errors),collapse="\n"))
   cards<-req$plots %||% list(); cards<-cards[order(vapply(cards,function(c)c$top %||% 0,0),vapply(cards,function(c)c$left %||% 0,0))]
   if(single) cards<-cards[1]
-  if(include_plots && !length(cards)) fail("Worksheet is empty")
+  widgets<-if(include_widgets) req$widgets %||% list() else list()
+  if(include_plots && !length(cards) && !length(widgets)) fail("Worksheet is empty")
   if(!include_plots && kind!="pdf") fail("SVG output requires plots")
+  if(kind=="pdf" && !single && !isTRUE(req$reportBySample))
+    return(export_print_pages(req,data,if(include_plots)cards else list(),widgets))
   tmp<-tempfile(tmpdir=dirname(req$path),fileext=paste0(".",kind)); closed<-FALSE
-  if(kind=="pdf") grDevices::cairo_pdf(tmp,width=if(single)7 else 11.69,height=if(single)5.5 else 8.27,onefile=TRUE,family="Yu Gothic") else grDevices::svg(tmp,width=7,height=5.5,onefile=TRUE,family="Yu Gothic")
+  page_w <- if(kind=="pdf" && !single) 11.69 else 7
+  page_h <- if(kind=="pdf" && !single) 8.27 else 5.5
+  if(kind=="pdf") grDevices::cairo_pdf(tmp,width=page_w,height=page_h,onefile=TRUE,family="Yu Gothic") else grDevices::svg(tmp,width=page_w,height=page_h,onefile=TRUE,family="Yu Gothic")
   on.exit({if(!closed)dev.off();if(file.exists(tmp))unlink(tmp)},add=TRUE)
-  if(include_plots) {
-    # Preserve the worksheet coordinates on one landscape page, scaled as a whole.
-    board_w<-max(vapply(cards,function(c)(c$left %||% 0)+(c$width %||% 344)+30,0),1120)
-    board_h<-max(vapply(cards,function(c)(c$top %||% 0)+(c$height %||% 314)+40,0),710)
-    for(i in seq_along(cards)) { card<-cards[[i]]; x1<-(card$left %||% 0)/board_w; x2<-((card$left %||% 0)+(card$width %||% 344))/board_w; y1<-(card$top %||% 0)/board_h; y2<-((card$top %||% 0)+(card$height %||% 314))/board_h; par(fig=c(x1,x2,1-y2,1-y1),new=i>1,mar=c(1.7,1.7,1.7,.4),bg="white"); d<-data$plots[[card$id]]; draw_card(card,d); draw_child_gates(card,d,req$project,req$worksheetPrint %||% list(),data$stats[[d$sampleId]] %||% list()) }
+  if(include_plots || length(widgets)) {
+    # Each sample report page contains its own plots and statistics widget.
+    groups <- if(isTRUE(req$reportBySample)) lapply(req$project$samples,function(s) list(
+      cards=Filter(function(card)identical(card$reportSampleId,s$id),if(include_plots)cards else list()),
+      widgets=Filter(function(widget)identical(widget$reportSampleId,s$id),widgets)
+    )) else list(list(cards=if(include_plots)cards else list(),widgets=widgets))
+    groups <- Filter(function(group)length(group$cards)>0 || length(group$widgets)>0,groups)
+    for(group in groups) {
+      elements <- c(lapply(group$cards,function(value)list(kind="plot",value=value)),lapply(group$widgets,function(value)list(kind="statistics",value=value)))
+      elements <- elements[order(vapply(elements,function(item)item$value$top %||% 0,0),vapply(elements,function(item)item$value$left %||% 0,0))]
+      lefts<-vapply(elements,function(item)item$value$left %||% 0,0)
+      tops<-vapply(elements,function(item)item$value$top %||% 0,0)
+      rights<-vapply(elements,function(item)(item$value$left %||% 0)+(item$value$width %||% if(identical(item$kind,"statistics"))640 else 344),0)
+      bottoms<-vapply(elements,function(item)(item$value$top %||% 0)+(item$value$height %||% if(identical(item$kind,"statistics"))340 else 314),0)
+      min_left<-min(lefts);min_top<-min(tops)
+      content_w<-max(rights)-min_left;content_h<-max(bottoms)-min_top
+      scale<-min(page_w/(content_w+140),page_h/(content_h+110))
+      offset_x<-(page_w-content_w*scale)/2
+      offset_y<-(page_h-content_h*scale)/2
+      for(i in seq_along(elements)) {
+        item<-elements[[i]]; element<-item$value
+        x1<-(offset_x+(lefts[i]-min_left)*scale)/page_w
+        x2<-(offset_x+(rights[i]-min_left)*scale)/page_w
+        y1<-(offset_y+(tops[i]-min_top)*scale)/page_h
+        y2<-(offset_y+(bottoms[i]-min_top)*scale)/page_h
+        compact <- min((rights[i]-lefts[i])*scale,(bottoms[i]-tops[i])*scale) < 2.6
+        par(fig=c(x1,x2,1-y2,1-y1),new=i>1,mar=if(identical(item$kind,"statistics"))c(.7,.7,1.4,.45)else if(compact)c(2.8,3.3,1.9,.5)else c(3.2,3.8,2.5,.7))
+        if(identical(item$kind,"plot")) {
+          d<-data$plots[[element$id]]
+          draw_card(element,d,compact)
+          draw_child_gates(element,d,req$project,data$stats[[d$sampleId]] %||% list())
+        } else {
+          stats_id <- element$reportSampleId %||% element$sampleId
+          if(is.null(stats_id)||identical(stats_id,"active")) stats_id<-req$sampleId
+          sample_match<-Filter(function(s)identical(s$id,stats_id),req$project$samples)
+          name<-if(length(sample_match))sample_match[[1]]$name else "Selected sample"
+          draw_statistics_widget(element,data$stats[[stats_id]] %||% list(),name,req$project$gates %||% list())
+        }
+      }
+    }
   }
   if(kind=="pdf" && (isTRUE(req$includeStatistics) || isTRUE(req$includeCompensation))) draw_statistics_pages(req)
   dev.off();closed<-TRUE; if(!file.rename(tmp,req$path)){if(!file.copy(tmp,req$path,overwrite=TRUE))fail(paste("Cannot write",kind));unlink(tmp)};list(path=normalizePath(req$path,winslash="/"),plots=if(include_plots)length(cards)else 0)
@@ -317,15 +626,41 @@ export_vector <- function(req,kind=c("pdf","svg"),single=FALSE) {
 
 .dispatch_core <- dispatch
 dispatch <- function(req) {
+  if(identical(req$action,"axis_preview")) return(axis_preview(req))
   if(identical(req$action,"statistics_csv")) return(export_statistics_csv(req))
   if(identical(req$action,"plot_pdf")) return(export_vector(req,"pdf",TRUE))
   if(identical(req$action,"plot_svg")) return(export_vector(req,"svg",TRUE))
   if(identical(req$action,"worksheet_pdf")) return(export_vector(req,"pdf",FALSE))
   if(identical(req$action,"worksheet_report_pdf")) {
-    templates<-req$plots %||% list(); cards<-list(); offset<-0
-    for(s in req$project$samples) { for(card in templates) if(identical(card$sampleId,"active")) { card$id<-paste0(s$id,"/",card$id);card$sampleId<-s$id;card$top<-(card$top %||% 0)+offset;cards[[length(cards)+1]]<-card }; offset<-offset+max(1,vapply(templates,function(c)(c$top %||% 0)+(c$height %||% 0),0))+40 }
-    for(card in templates) if(!identical(card$sampleId,"active")){card$top<-(card$top %||% 0)+offset;cards[[length(cards)+1]]<-card}
+    templates<-req$plots %||% list(); cards<-list(); widget_templates<-req$widgets %||% list(); widgets<-list()
+    if(!length(req$project$samples))fail("No samples are available for the report")
+    sample_ids<-vapply(req$project$samples,function(s)s$id,"")
+    if(is.null(req$sampleId)||!req$sampleId%in%sample_ids)req$sampleId<-sample_ids[1]
+    for(s in req$project$samples) for(template in templates) {
+      card<-template
+      if(is.null(card$sampleId)||identical(card$sampleId,"active")) {
+        card$id<-paste0(s$id,"/",card$id)
+        card$sampleId<-s$id
+        card$reportSampleId<-s$id
+        cards[[length(cards)+1]]<-card
+      }
+    }
+    for(template in templates) if(!is.null(template$sampleId)&&!identical(template$sampleId,"active")) {
+      card<-template
+      card$reportSampleId<-card$sampleId
+      cards[[length(cards)+1]]<-card
+    }
+    for(s in req$project$samples) for(template in widget_templates) {
+      widget<-template
+      widget$id<-paste0(s$id,"/",widget$id)
+      widget$sampleId<-s$id
+      widget$reportSampleId<-s$id
+      widgets[[length(widgets)+1]]<-widget
+    }
     req$plots<-cards
+    req$widgets<-widgets
+    req$includeWidgets<-TRUE
+    req$reportBySample<-TRUE
     if(is.null(req$includePlots)) req$includePlots<-TRUE
     if(is.null(req$includeStatistics)) req$includeStatistics<-TRUE
     if(is.null(req$includeCompensation)) req$includeCompensation<-TRUE

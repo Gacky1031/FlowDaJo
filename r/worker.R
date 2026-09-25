@@ -3,6 +3,7 @@ args <- commandArgs(trailingOnly = FALSE)
 script <- sub("^--file=", "", args[grepl("^--file=", args)][1])
 suppressPackageStartupMessages(library(jsonlite))
 source(file.path(dirname(normalizePath(script)), "core.R"), encoding = "UTF-8")
+source(file.path(dirname(normalizePath(script)), "diva.R"), encoding = "UTF-8")
 source(file.path(dirname(normalizePath(script)), "worksheet.R"), encoding = "UTF-8")
 respond <- function(input) {
   result <- tryCatch(list(ok=TRUE,data=dispatch(fromJSON(input,simplifyVector=FALSE))),

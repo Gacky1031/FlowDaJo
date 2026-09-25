@@ -64,7 +64,9 @@ spill_config <- function(f) {
     if (!length(channels)) channels <- channel_names(f)
     s <- diag(length(channels)); dimnames(s) <- list(channels, channels)
   }
-  list(enabled = FALSE, channels = as.list(colnames(s)), values = rows(s))
+  apply_flag <- tolower(as.character(keys[["APPLY COMPENSATION"]] %||% ""))
+  list(enabled = apply_flag %in% c("true", "1", "yes"),
+       channels = as.list(colnames(s)), values = rows(s), source = "FCS spillover")
 }
 
 describe_sample <- function(s, f) {
@@ -96,9 +98,8 @@ axis_values <- function(f, axis) {
   x <- exprs(f)[, axis$channel]
   if (identical(axis$scale, "linear")) return(x)
   if (identical(axis$scale, "log")) {
-    # Log display is defined only for positive raw intensities.  Keep the
-    # missing values here so plots can report exclusions and gates cannot
-    # accidentally acquire nonpositive events.
+    # Nonpositive values have no logarithm. Plot rendering pins them to the
+    # visible minimum; only an edge-reaching gate may include them.
     out <- rep(NA_real_,length(x)); keep <- is.finite(x) & x > 0
     out[keep] <- log10(x[keep]); return(out)
   }
@@ -125,6 +126,17 @@ gate_masks <- function(f, gates) {
     # flowFrame rejects a constant synthetic parameter range, so provide a
     # harmless finite ramp for the unused y coordinate of a 1-D range gate.
     yv <- if (identical(g$type, "range")) seq(0, 1, length.out=length(xv)) else axis_values(f, g$y)
+    # A gate drawn to the displayed edge includes the events represented by
+    # the dots pinned to that edge. Keep the visible gate geometry unchanged.
+    edge <- g$edgeExtent %||% list()
+    if (identical(g$x$scale,"log") && !is.null(edge$xMin)) xv[!is.finite(xv)] <- as.numeric(edge$xMin)
+    if (!identical(g$type,"range") && identical(g$y$scale,"log") && !is.null(edge$yMin)) yv[!is.finite(yv)] <- as.numeric(edge$yMin)
+    if (!is.null(edge$xMin)) xv <- pmax(xv, as.numeric(edge$xMin))
+    if (!is.null(edge$xMax)) xv <- pmin(xv, as.numeric(edge$xMax))
+    if (!identical(g$type, "range")) {
+      if (!is.null(edge$yMin)) yv <- pmax(yv, as.numeric(edge$yMin))
+      if (!is.null(edge$yMax)) yv <- pmin(yv, as.numeric(edge$yMax))
+    }
     xy <- cbind(xv, yv); colnames(xy) <- c("x", "y")
     finite_xy <- is.finite(xy[,1]) & is.finite(xy[,2])
     if (identical(g$type, "rectangle")) {
@@ -188,39 +200,78 @@ analyze <- function(p, sample_id, storage, include_internal = FALSE) {
 }
 
 import_samples <- function(req) {
-  paths <- unlist(req$paths, use.names = FALSE); warnings <- character(); metadata <- list()
+  paths <- unlist(req$paths, use.names = FALSE); warnings <- character(); xmls <- character()
   files <- character()
   for (path in paths) {
     if (dir.exists(path)) {
       files <- c(files, list.files(path, pattern = "\\.fcs$", recursive = TRUE, full.names = TRUE, ignore.case = TRUE))
-      xmls <- list.files(path, pattern = "\\.xml$", recursive = TRUE, full.names = TRUE, ignore.case = TRUE)
-      for (xml in xmls) {
-        tryCatch({
-          text <- paste(readLines(xml, warn = FALSE), collapse = "\n")
-          if (grepl("<!DOCTYPE|<!ENTITY", text, ignore.case = TRUE)) fail("DTD/entity declarations are not accepted")
-          doc <- xml2::read_xml(text, options = "NONET")
-          names <- xml2::xml_attr(xml2::xml_find_all(doc, "//*[local-name()='experiment' or local-name()='Experiment']"), "name")
-          metadata[[length(metadata) + 1]] <- list(file = basename(xml), experiments = as.list(names[!is.na(names)]))
-          warnings <- c(warnings, paste0(basename(xml), ": XML metadata read. DIVA gates, worksheet and compensation XML are not restored; use FCS spillover and recreate gates."))
-        }, error = function(e) { warnings <<- c(warnings, paste(basename(xml), conditionMessage(e))) })
-      }
+      xmls <- c(xmls, list.files(path, pattern = "\\.xml$", recursive = TRUE, full.names = TRUE, ignore.case = TRUE))
+    } else if (grepl("\\.xml$", path, ignore.case = TRUE)) {
+      xmls <- c(xmls, path)
+      files <- c(files, list.files(dirname(path), pattern = "\\.fcs$", full.names = TRUE, ignore.case = TRUE))
     } else files <- c(files, path)
+  }
+  xmls <- unique(xmls[file.exists(xmls)])
+  diva_imports <- list()
+  for (xml in xmls) {
+    tryCatch({
+      imported <- parse_diva_xml(xml)
+      diva_imports[[length(diva_imports) + 1L]] <- imported
+      if (length(imported$warnings)) warnings <- c(warnings, imported$warnings)
+    }, error = function(e) { warnings <<- c(warnings, paste(basename(xml), conditionMessage(e))) })
   }
   files <- unique(normalizePath(files, winslash = "/", mustWork = TRUE))
   if (!length(files)) fail("No FCS files found")
+  diva_order <- character()
+  for (diva in diva_imports) for (entry in diva$sampleSettings) {
+    expected <- if (file.exists(entry$expectedPath)) normalizePath(entry$expectedPath, winslash = "/", mustWork = TRUE) else ""
+    exact <- if (nzchar(expected)) files[tolower(files) == tolower(expected)] else character()
+    by_name <- files[tolower(basename(files)) == tolower(entry$file)]
+    candidate <- if (length(exact)) exact[1] else if (length(by_name)) by_name[1] else ""
+    if (nzchar(candidate)) diva_order <- c(diva_order, candidate)
+  }
+  diva_order <- unique(diva_order)
+  files <- c(diva_order, files[!tolower(files) %in% tolower(diva_order)])
   samples <- list()
   for (file in files) {
     tryCatch({
       if (!grepl("\\.fcs$", file, ignore.case = TRUE)) fail("Only FCS files are accepted")
       hash <- unname(tools::md5sum(file))
       s <- list(id = paste0("s-", hash, "-", length(samples) + 1), kind = "fcs", path = file, md5 = hash, name = basename(file))
-      samples[[length(samples) + 1]] <- describe_sample(s, read_frame(s, req$storage))
+      f <- read_frame(s, req$storage)
+      s <- describe_sample(s, f)
+      matched <- NULL
+      for (diva in diva_imports) {
+        if (!length(diva$sampleSettings)) next
+        for (entry in diva$sampleSettings) {
+          expected <- if (file.exists(entry$expectedPath)) normalizePath(entry$expectedPath, winslash = "/", mustWork = TRUE) else ""
+          same_path <- nzchar(expected) && identical(tolower(expected), tolower(file))
+          same_name <- identical(tolower(entry$file), tolower(basename(file)))
+          if (same_path || same_name) { matched <- entry; break }
+        }
+        if (!is.null(matched)) break
+      }
+      if (!is.null(matched)) {
+        label <- c(matched$specimen, matched$tube); label <- label[nzchar(label)]
+        if (length(label)) s$name <- paste(label, collapse = " / ")
+        imported_comp <- diva_spillover(matched$instrumentSettings, f, s$compensation$enabled)
+        if (!is.null(imported_comp)) s$compensation <- imported_comp
+        else warnings <- c(warnings, paste0(basename(file), ": DIVA compensation could not be mapped to FCS channels; retained the FCS matrix."))
+      }
+      samples[[length(samples) + 1]] <- s
     }, error = function(e) { warnings <<- c(warnings, paste(basename(file), conditionMessage(e))) })
   }
   if (!length(samples)) fail(paste(warnings, collapse = "\n"))
-  list(samples = samples, warnings = as.list(warnings), divaMetadata = metadata)
+  diva_metadata <- lapply(diva_imports, function(x) x$metadata)
+  diva_gates <- unlist(lapply(diva_imports, function(x) x$gates), recursive = FALSE)
+  diva_worksheets <- unlist(lapply(diva_imports, function(x) x$worksheets), recursive = FALSE)
+  diva_compensations <- unlist(lapply(diva_imports, function(x) x$divaCompensations), recursive = FALSE)
+  active_worksheet <- NULL
+  for (diva in diva_imports) if (!is.null(diva$activeWorksheet)) { active_worksheet <- diva$activeWorksheet; break }
+  list(samples = samples, warnings = as.list(warnings), divaMetadata = diva_metadata,
+       divaGates = diva_gates, divaWorksheets = diva_worksheets,
+       divaCompensations = diva_compensations, divaActiveWorksheet = active_worksheet)
 }
-
 export_pdf <- function(p, storage, path) {
   if (!grepl("\\.pdf$", path, ignore.case = TRUE)) fail("PDF output must end in .pdf")
   if (!length(p$samples)) fail("No samples to export")

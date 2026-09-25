@@ -3,6 +3,7 @@ import { axis, oneDimensional, scaleLabel } from "./model";
 
 export type AxisSide = "x" | "y";
 export type AxisScope = "plot" | "sheet";
+export type AxisPreview = { range: [number, number]; counts: number[]; ticks: { value: number; label: string }[]; total: number; outside: number };
 const esc = (value: string) =>
   value.replace(
     /[&<>"']/g,
@@ -182,6 +183,7 @@ export function editAxis(
   plot: WorksheetPlot,
   matches: number,
   apply: (a: Axis, scope: AxisScope) => void,
+  preview?: (a: Axis) => Promise<AxisPreview>,
 ) {
   const { dialog, close } = dialogShell(
     "axis-dialog",
@@ -189,11 +191,52 @@ export function editAxis(
     anchor,
   );
   const current = plot[side];
-  dialog.innerHTML = `<form novalidate><div class="axis-dialog-heading"><div><h2>${side.toUpperCase()}軸のスケール詳細</h2><p>${esc(current.channel)}</p></div><button type="button" data-close aria-label="閉じる">×</button></div><label>表示スケール<select name="scale" aria-label="表示スケール"><option value="linear">Linear（線形）</option><option value="log">Log（常用対数・正値のみ）</option><option value="logicle">Biexponential / Logicle（負値・ゼロを含む蛍光）</option></select></label><fieldset class="range-fields"><legend>表示範囲</legend><label class="check"><input type="checkbox" name="auto">データに合わせて自動調整</label><div class="two"><label>最小値<input name="min" type="number" step="any"></label><label>最大値<input name="max" type="number" step="any"></label></div><p class="hint" data-units></p></fieldset><fieldset class="transform-fields"><legend>Logicle 変換</legend><div class="two"><label>W · ゼロ付近の線形幅<input name="w" type="number" step="0.1"></label><label>T · 上限の基準値<input name="t" type="number" step="any"></label><label>M · 正側の decades<input name="m" type="number" step="0.1"></label><label>A · 負側の追加 decades<input name="a" type="number" step="0.1"></label></div></fieldset><label>適用先<select name="scope"><option value="plot">このプロットの ${side.toUpperCase()} 軸のみ</option><option value="sheet">このワークシートの同じチャンネル（${matches} 軸）</option></select></label><p class="hint">変換を変更しても既存ゲートの判定条件は保持します。異なる変換のゲートは、この表示では編集できません。</p><p class="axis-validation" role="alert"></p><div class="axis-dialog-actions"><button type="button" data-default>既定値に戻す</button><span class="spacer"></span><button type="button" data-cancel>キャンセル</button><button type="submit" class="primary">適用して閉じる</button></div></form>`;
+  dialog.innerHTML = `<form novalidate><div class="axis-dialog-heading"><div><h2>${side.toUpperCase()}軸のスケール詳細</h2><p>${esc(current.channel)}</p></div><button type="button" data-close aria-label="閉じる">×</button></div><label>表示スケール<select name="scale" aria-label="表示スケール"><option value="linear">Linear（線形）</option><option value="log">Log（常用対数・正値のみ）</option><option value="logicle">Biexponential / Logicle（負値・ゼロを含む蛍光）</option></select></label><fieldset class="range-fields"><legend>表示範囲</legend><label class="check"><input type="checkbox" name="auto">データに合わせて自動調整</label><div class="two"><label>最小値<input name="min" type="number" step="any"></label><label>最大値<input name="max" type="number" step="any"></label></div><p class="hint" data-units></p></fieldset><fieldset class="transform-fields"><legend>Logicle 変換</legend><div class="two"><label>W · ゼロ付近の線形幅<input name="w" type="number" step="0.1"></label><label>T · 上限の基準値<input name="t" type="number" step="any"></label><label>M · 正側の decades<input name="m" type="number" step="0.1"></label><label>A · 負側の追加 decades<input name="a" type="number" step="0.1"></label></div></fieldset><fieldset class="axis-preview"><legend>変更後の分布プレビュー</legend><div data-axis-preview class="axis-preview-body">ヒストグラムを読み込んでいます…</div></fieldset><label>適用先<select name="scope"><option value="plot">このプロットの ${side.toUpperCase()} 軸のみ</option><option value="sheet">このワークシートの同じチャンネル（${matches} 軸）</option></select></label><p class="hint">変換を変更しても既存ゲートの判定条件は保持します。異なる変換のゲートは、この表示では編集できません。</p><p class="axis-validation" role="alert"></p><div class="axis-dialog-actions"><button type="button" data-default>既定値に戻す</button><span class="spacer"></span><button type="button" data-cancel>キャンセル</button><button type="submit" class="primary">適用して閉じる</button></div></form>`;
   const form = dialog.querySelector("form")!;
   const input = (key: string) =>
     form.elements.namedItem(key) as HTMLInputElement;
   const error = dialog.querySelector<HTMLElement>("[role=alert]")!;
+  let previewTimer: ReturnType<typeof setTimeout> | undefined;
+  let previewSequence = 0;
+  const previewBody = dialog.querySelector<HTMLElement>("[data-axis-preview]")!;
+  function candidate(): Axis {
+    const a: Axis = { ...current, scale: input("scale").value as Axis["scale"] };
+    for (const k of ["w", "t", "m", "a"] as const) a[k] = input(k).value.trim() ? Number(input(k).value) : NaN;
+    delete a.min; delete a.max;
+    a.autoRange = input("auto").checked;
+    if (!a.autoRange) {
+      a.min = input("min").value.trim() ? Number(input("min").value) : NaN;
+      a.max = input("max").value.trim() ? Number(input("max").value) : NaN;
+    }
+    return a;
+  }
+  function schedulePreview() {
+    if (!preview) return;
+    if (previewTimer) clearTimeout(previewTimer);
+    const sequence = ++previewSequence;
+    const a = candidate();
+    const issue = axisValidation(a);
+    if (issue) { previewBody.textContent = issue; return; }
+    previewBody.textContent = "分布を計算中…";
+    previewTimer = setTimeout(async () => {
+      try {
+        const result = await preview(a);
+        if (sequence !== previewSequence || !dialog.open) return;
+        const counts = result.counts ?? [];
+        const max = Math.max(1, ...counts);
+        const bars = counts.map((count, i) => `<rect x="${18 + i * 6}" y="${110 - count / max * 88}" width="5.6" height="${count / max * 88}" fill="#3b81a9"/>`).join("");
+        const labels = (result.ticks ?? []).filter((tick) => !!tick.label).filter((_, i) => i % Math.max(1, Math.ceil(result.ticks.filter((t) => !!t.label).length / 6)) === 0).map((tick) => {
+          const x = 18 + (tick.value - result.range[0]) / Math.max(1e-12, result.range[1] - result.range[0]) * 384;
+          return `<text x="${x}" y="126" text-anchor="middle" font-size="10" fill="#455d70">${esc(tick.label)}</text>`;
+        }).join("");
+        previewBody.innerHTML = `<svg viewBox="0 0 420 138" role="img" aria-label="変更後の${esc(a.channel)}ヒストグラム"><path d="M18 20V110H402" fill="none" stroke="#667b8b"/>${bars}${labels}</svg><small>${(result.total - result.outside).toLocaleString()} / ${result.total.toLocaleString()} events · 範囲外 ${result.outside.toLocaleString()}</small>`;
+      } catch (error) {
+        if (sequence === previewSequence && dialog.open) previewBody.textContent = `プレビューを表示できません: ${String(error)}`;
+      }
+    }, 180);
+  }
+  form.addEventListener("input", (event) => { if ((event.target as HTMLInputElement).name !== "scope") schedulePreview(); });
+  form.addEventListener("change", (event) => { if ((event.target as HTMLInputElement).name !== "scope") schedulePreview(); });
   function update() {
     const linear = input("scale").value === "linear";
     (
@@ -212,6 +255,7 @@ export function editAxis(
       input(k).value = String(a[k] ?? "");
     input("auto").checked = a.autoRange === true || (a.min === undefined && a.max === undefined);
     update();
+    schedulePreview();
   }
   input("scale").onchange = update;
   input("auto").onchange = update;
@@ -245,5 +289,6 @@ export function editAxis(
   };
   fill(current);
   dialog.showModal();
+  schedulePreview();
   input("scale").focus();
 }

@@ -1,5 +1,7 @@
 if (.Platform$OS.type == "windows") invisible(Sys.setlocale("LC_CTYPE", "English_United States.utf8"))
 source("r/core.R", encoding = "UTF-8")
+source("r/diva.R", encoding = "UTF-8")
+source("r/worksheet.R", encoding = "UTF-8")
 suppressPackageStartupMessages(library(jsonlite))
 passed <- 0L
 test <- function(name, code) { force(code); passed <<- passed + 1L; cat("PASS", name, "\n") }
@@ -40,4 +42,86 @@ test("project save/load roundtrip",{file<-file.path(storage,"project.json");disp
 test("changed source rejected even with cache",{cat("changed",file=path,append=TRUE);errors(read_frame(p$samples[[1]],storage),"changed")})
 test("DIVA XML safely rejects entities",{dir<-file.path(storage,"diva");dir.create(dir);write.FCS(demo_frame(),file.path(dir,"tube.fcs"));writeLines('<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><Experiment name="test"/>',file.path(dir,"export.xml"));i<-import_samples(list(paths=list(dir),storage=storage));stopifnot(length(i$samples)==1,grepl("DTD/entity",i$warnings[[1]]))})
 test("DIVA experiment metadata and explicit warning",{dir<-file.path(storage,"diva2");dir.create(dir);write.FCS(demo_frame(),file.path(dir,"tube.fcs"));writeLines('<Experiment name="T cells"><Tube name="One"/></Experiment>',file.path(dir,"export.xml"));i<-import_samples(list(paths=list(dir),storage=storage));stopifnot(i$divaMetadata[[1]]$experiments[[1]]=="T cells",grepl("not restored",i$warnings[[1]]))})
+test("DIVA worksheet gates inherit experiment-scale Logicle widths", {
+  local <- xml2::read_xml("<instrument_settings><parameter name='PE-A'><is_log>true</is_log><manual_biexp_scale>-1</manual_biexp_scale><biexp_scale>-1</biexp_scale><comp_biexp_scale>-1</comp_biexp_scale></parameter></instrument_settings>")
+  global <- xml2::read_xml("<instrument_settings><parameter name='PE-A'><is_log>true</is_log><manual_biexp_scale>171</manual_biexp_scale></parameter></instrument_settings>")
+  template_doc <- xml2::read_xml("<worksheet_template><instrument_settings><parameter name='PE-A'><is_log>true</is_log><manual_biexp_scale>-1</manual_biexp_scale><biexp_scale>-1</biexp_scale><comp_biexp_scale>-1</comp_biexp_scale></parameter></instrument_settings><gates><gate fullname='All Events\\P'><is_x_parameter_scaled>true</is_x_parameter_scaled><is_y_parameter_scaled>true</is_y_parameter_scaled><x_parameter_scale_value>171</x_parameter_scale_value><y_parameter_scale_value>171</y_parameter_scale_value><region type='RECTANGLE_REGION' xparm='PE-A' yparm='PE-A'><points><point x='100' y='200'/><point x='5000' y='6000'/></points></region></gate></gates></worksheet_template>")
+  imported <- diva_gate_import(template_doc, "Current", TRUE, "0123456789", 1, diva_channel_settings(global))
+  gate <- imported$gates[[1]]
+  bounds <- as.numeric(unlist(gate$bounds))
+  stopifnot(abs(gate$x$w - diva_width(171)) < 1e-12, abs(gate$y$w - diva_width(171)) < 1e-12,
+            all(is.finite(bounds)), bounds[1] < bounds[2])
+})
+test("DIVA scaled gates use their own biexponential transform before the display transform", {
+  display <- list(scale="logicle",w=diva_width(67),t=262144,m=4.5,a=0)
+  coordinate <- 952.3255813953489
+  gate_transform <- logicleTransform(w=diva_width(45),t=262144,m=4.5,a=0)
+  display_transform <- logicleTransform(w=display$w,t=262144,m=4.5,a=0)
+  expected <- display_transform(inverseLogicleTransform(gate_transform)(coordinate/4096*4.5))
+  actual <- diva_axis_values(coordinate,display,TRUE,45)
+  stopifnot(abs(actual-expected)<1e-10,
+            abs(actual-display_transform(coordinate))>.1,
+            is.finite(diva_axis_values(c(-48,4096),display,TRUE,88)))
+  stopifnot(abs(diva_axis_values(3,display,FALSE,31)-display_transform(1000))<1e-10)
+})
+test("edge gates retain events beyond the plotted border", {
+  f <- flowFrame(matrix(c(1,5,12,5,20,5),ncol=2,byrow=TRUE,
+                        dimnames=list(NULL,c("x","y"))))
+  ax <- list(channel="x",scale="linear"); ay <- list(channel="y",scale="linear")
+  g <- list(id="edge",parent="root",type="rectangle",x=ax,y=ay,
+            bounds=list(0,10,0,10),edgeExtent=list(xMax=10))
+  stopifnot(identical(as.logical(gate_masks(f,list(g))$edge),c(TRUE,TRUE,TRUE)))
+  g$edgeExtent <- NULL
+  stopifnot(identical(as.logical(gate_masks(f,list(g))$edge),c(TRUE,FALSE,FALSE)))
+})
+test("axis ticks use readable superscript powers", {
+  stopifnot(axis_tick_label(1000) == "10³", axis_tick_label(-1000) == "−10³",
+            axis_tick_label(1500) == "1.5×10³", axis_tick_label(.001) == "10⁻³")
+})
+test("statistics widget hides only selected population paths", {
+  parent <- list(id="p1",name="P1",parent="root")
+  child <- list(id="p2",name="P2",parent="p1")
+  statistics <- list(list(id="root"),list(id="p1"),list(id="p2"))
+  widget <- list(hiddenPopulationPaths=list('["P1"]'))
+  visible <- visible_widget_statistics(widget,statistics,list(parent,child))
+  stopifnot(identical(vapply(visible,function(row)row$id,""),c("root","p2")),
+            identical(statistics_population_key("p2",list(parent,child)),'["P1","P2"]'))
+})
+test("surviving deepest gates keep dot colors after a sibling is deleted", {
+  f <- flowFrame(matrix(c(1,1,2,2,3,3,4,4),ncol=2,byrow=TRUE,dimnames=list(NULL,c("X","Y"))))
+  ax <- list(channel="X",scale="linear",w=.5,t=262144,m=4.5,a=0)
+  ay <- ax;ay$channel <- "Y"
+  parent <- list(id="parent",name="Parent",sampleId="s",parent="root",type="rectangle",x=ax,y=ay,bounds=list(0,5,0,5),color="#aa0000")
+  left <- parent;left$id <- "left";left$name <- "Left";left$parent <- "parent";left$bounds <- list(0,2.5,0,5);left$color <- "#0000aa"
+  deep <- left;deep$id <- "deep";deep$name <- "Deep";deep$parent <- "left";deep$bounds <- list(0,1.5,0,5);deep$color <- "#aaaa00"
+  right <- parent;right$id <- "right";right$name <- "Right";right$parent <- "parent";right$bounds <- list(2.5,5,0,5);right$color <- "#00aa00"
+  paint <- function(gates) {
+    entry <- list(frame=f,gates=gates,masks=gate_masks(f,gates),axes=new.env(parent=emptyenv()))
+    card <- list(id="plot",x=ax,y=ay,mode="scatter",population=list("Parent"))
+    worksheet_plot(entry,card,list(id="s",name="Sample",compensation=list(enabled=FALSE)))$pointColors
+  }
+  stopifnot(identical(as.character(paint(list(parent,left,deep,right))),c("#aaaa00","#0000aa","#00aa00","#00aa00")))
+  stopifnot(identical(as.character(paint(list(parent,left,deep))),c("#aaaa00","#0000aa","#aa0000","#aa0000")))
+  stopifnot(identical(as.character(paint(list(deep,left,parent))),c("#aaaa00","#0000aa","#aa0000","#aa0000")))
+})
+test("worksheet cache recalculates surviving gate colors after deletion", {
+  ax <- axis_default("FSC-A");ay <- axis_default("SSC-A")
+  parent <- list(id="cache-parent",name="Parent",sampleId="demo-42",parent="root",type="rectangle",x=ax,y=ay,bounds=list(0,1e9,0,1e9),color="#aa0000")
+  low <- parent;low$id <- "cache-low";low$name <- "Low";low$parent <- parent$id;low$bounds <- list(0,1e5,0,1e9);low$color <- "#0000aa"
+  deepest <- low;deepest$id <- "cache-deep";deepest$name <- "Deep";deepest$bounds <- list(0,6e4,0,1e9);deepest$parent <- low$id;deepest$color <- "#aaaa00"
+  high <- parent;high$id <- "cache-high";high$name <- "High";high$parent <- parent$id;high$bounds <- list(1e5,1e9,0,1e9);high$color <- "#00aa00"
+  project <- list(schema="flowdesk-r/1",samples=list(demo$samples[[1]]),gates=list(parent,low,deepest,high))
+  card <- list(id="colors",sampleId="active",population=list(),mode="scatter",x=ax,y=ay)
+  request <- list(project=project,sampleId="demo-42",plots=list(card),storage=storage)
+  before <- worksheet(request)$plots$colors$pointColors
+  request$project$gates <- list(parent,low,deepest)
+  after <- worksheet(request)$plots$colors$pointColors
+  stopifnot(any(before=="#00aa00"),any(after=="#aaaa00"),any(after=="#0000aa"),
+            !any(after=="#00aa00"),length(unique(after))>=3)
+})
+test("DIVA automatic scale uses the compensated scale when compensation is enabled", {
+  settings <- xml2::read_xml("<instrument_settings><compensation_enabled>true</compensation_enabled><parameter name='PE-A'><is_log>true</is_log><manual_biexp_scale>0</manual_biexp_scale><biexp_scale>42</biexp_scale><comp_biexp_scale>74</comp_biexp_scale></parameter></instrument_settings>")
+  axis <- diva_axis("PE-A", diva_channel_settings(settings))
+  stopifnot(abs(axis$w - diva_width(74)) < 1e-12)
+})
 cat(passed,"tests passed\n")

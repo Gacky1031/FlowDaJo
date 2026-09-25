@@ -12,7 +12,6 @@ import { gateContains } from "./gate-hit";
 import { gateAppliesToSample, oneDimensional } from "./model";
 export const compatible = (g: Gate, d: WorksheetData) =>
   gateAppliesToSample(g, d.sampleId) &&
-  g.parent === d.gateId &&
   axisKey(g.x) === axisKey(d.x) &&
   (g.type === "range" || axisKey(g.y) === axisKey(d.y)) &&
   (oneDimensional(d) ? g.type === "range" : g.type !== "range");
@@ -32,6 +31,7 @@ export function overlay(
   preview?: Gate,
   polygon: number[][] = [],
   statistics: Statistic[] = [],
+  style?: WorksheetPlot,
 ) {
   const geo = geometry(stage, d),
     svg = stage.querySelector("svg")!;
@@ -41,8 +41,14 @@ export function overlay(
   let html = "";
   const gateLabel = (g: Gate) => {
     const stat = statistics.find((s) => s.id === g.id);
-    return `${g.name}${stat?.percentParent != null ? ` · ${stat.percentParent.toFixed(1)}%` : ""}`;
+    return `${style?.showGateNames === false ? "" : g.name}${style?.showGatePercentages === false || stat?.percentParent == null ? "" : `${style?.showGateNames === false ? "" : " · "}${stat.percentParent.toFixed(1)}%`}`;
   };
+  const visibleIds = new Set(
+    style?.displayGates ??
+      gates
+        .filter((g) => g.parent === d.gateId && compatible(g, d))
+        .map((g) => g.id),
+  );
   const drawGate = (g: Gate, ghost = false) => {
     let shape = "",
       vertices: number[][] = [];
@@ -77,9 +83,10 @@ export function overlay(
     }
     const active = g.id === selected || ghost;
     const first = vertices[0];
-    html += `<g data-shape="${escape(g.id)}" class="gate-shape ${active ? "editing" : ""}" stroke="${active ? "#17699b" : "#303e48"}" fill="transparent" stroke-width="${active ? 2 : 1.4}">${shape}</g>`;
-    if (first && g.type !== "quadrant")
-      html += `<text data-shape="${escape(g.id)}" x="${Math.max(geo.left, Math.min(geo.right - 35, geo.px(first[0]) + 4))}" y="${Math.max(geo.top + 12, geo.py(first[1]) - 5)}" fill="#263845" font-size="11">${escape(gateLabel(g))}</text>`;
+    const color = g.color ?? "#303e48";
+    html += `<g data-shape="${escape(g.id)}" class="gate-shape ${active ? "editing" : ""}" stroke="${color}" fill="transparent" stroke-width="${active ? 2.2 : 1.5}">${shape}</g>`;
+    if (first && g.type !== "quadrant" && gateLabel(g))
+      html += `<text data-shape="${escape(g.id)}" x="${Math.max(geo.left, Math.min(geo.right - 35, geo.px(first[0]) + 4))}" y="${Math.max(geo.top + 12, geo.py(first[1]) - 5)}" fill="${color}" font-size="11">${escape(gateLabel(g))}</text>`;
     if (active)
       vertices.forEach(
         (pt, i) =>
@@ -87,7 +94,7 @@ export function overlay(
       );
   };
   const seen = new Set<string>();
-  for (const g of gates.filter((g) => compatible(g, d))) {
+  for (const g of gates.filter((g) => visibleIds.has(g.id) && compatible(g, d))) {
     if (preview?.id === g.id) continue;
     if (g.type === "quadrant" && g.groupId) {
       if (seen.has(g.groupId)) continue;
@@ -102,16 +109,17 @@ export function overlay(
     );
   }
   for (const g of gates.filter(
-    (g) => compatible(g, d) && g.type === "quadrant",
+    (g) => visibleIds.has(g.id) && compatible(g, d) && g.type === "quadrant",
   )) {
     const right = g.quadrant === 2 || g.quadrant === 4,
       upper = g.quadrant === 1 || g.quadrant === 2;
-    html += `<text data-shape="${escape(g.id)}" x="${right ? geo.right - 5 : geo.left + 5}" y="${upper ? geo.top + 14 : geo.bottom - 8}" text-anchor="${right ? "end" : "start"}" fill="#263845" font-size="10">${escape(gateLabel(g))}</text>`;
+    if (gateLabel(g)) html += `<text data-shape="${escape(g.id)}" x="${right ? geo.right - 5 : geo.left + 5}" y="${upper ? geo.top + 14 : geo.bottom - 8}" text-anchor="${right ? "end" : "start"}" fill="${g.color ?? "#303e48"}" font-size="10">${escape(gateLabel(g))}</text>`;
   }
   if (preview) drawGate(preview, true);
   if (polygon.length)
     html += `<polyline pointer-events="none" points="${line(polygon)}" fill="none" stroke="#e46614" stroke-width="2"/>`;
-  svg.innerHTML = html;
+  const clipId = `plot-clip-${stage.closest<HTMLElement>("[data-card]")?.dataset.card ?? "stage"}`;
+  svg.innerHTML = `<defs><clipPath id="${clipId}"><rect x="${geo.left}" y="${geo.top}" width="${geo.right - geo.left}" height="${geo.bottom - geo.top}"/></clipPath></defs><g clip-path="url(#${clipId})">${html}</g>`;
 }
 export interface PlotActions {
   project: () => Project;
@@ -149,7 +157,27 @@ export function gestures(
       preview,
       polygon,
       a.statistics(),
+      card,
     );
+  const clipToPlot = (gate: Gate): Gate => {
+    const clip = (value: number, range: [number, number]) =>
+      Math.max(range[0], Math.min(range[1], value));
+    if (gate.bounds) {
+      gate.bounds = gate.type === "range"
+        ? [clip(gate.bounds[0], d.xRange), clip(gate.bounds[1], d.xRange)]
+        : [
+            clip(gate.bounds[0], d.xRange),
+            clip(gate.bounds[1], d.xRange),
+            clip(gate.bounds[2], d.yRange),
+            clip(gate.bounds[3], d.yRange),
+          ];
+    }
+    if (gate.vertices)
+      gate.vertices = gate.vertices.map(([x, y]) => [clip(x, d.xRange), clip(y, d.yRange)]);
+    if (gate.center)
+      gate.center = [clip(gate.center[0], d.xRange), clip(gate.center[1], d.yRange)];
+    return gate;
+  };
   const cancel = () => {
     start = undefined;
     original = undefined;
@@ -161,14 +189,7 @@ export function gestures(
   stage.onpointerdown = (e) => {
     if (e.button !== 0 || (e.target as Element).closest("button")) return;
     const geo = geometry(stage, d);
-    const box = stage.getBoundingClientRect();
-    if (
-      e.clientX - box.left < geo.left ||
-      e.clientX - box.left > geo.right ||
-      e.clientY - box.top < geo.top ||
-      e.clientY - box.top > geo.bottom
-    )
-      return;
+    if (!geo.contains(e)) return;
     const tool = a.tool(),
       pt = geo.point(e);
     if (oneDimensional(d) && !["select", "range"].includes(tool)) return;
@@ -259,6 +280,7 @@ export function gestures(
                 Math.max(start[1], pt[1]),
               ],
       };
+    if (preview) preview = clipToPlot(preview);
     redraw();
   };
   stage.onpointerup = (e) => {
@@ -288,31 +310,26 @@ export function gestures(
   stage.onclick = (e) => {
     if ((e.target as Element).closest("button")) return;
     if (a.tool() === "polygon" && !oneDimensional(d) && e.detail < 2) {
-      const geo = geometry(stage, d),
-        box = stage.getBoundingClientRect();
-      if (
-        e.clientX - box.left < geo.left ||
-        e.clientX - box.left > geo.right ||
-        e.clientY - box.top < geo.top ||
-        e.clientY - box.top > geo.bottom
-      )
-        return;
+      const geo = geometry(stage, d);
+      if (!geo.contains(e)) return;
       polygon.push(geo.point(e));
       a.gesture(true);
       redraw();
     }
   };
   const hits = (e: MouseEvent) => {
-    const geo = geometry(stage, d),
-      box = stage.getBoundingClientRect();
-    if (
-      e.clientX - box.left < geo.left ||
-      e.clientX - box.left > geo.right ||
-      e.clientY - box.top < geo.top ||
-      e.clientY - box.top > geo.bottom
-    )
-      return [];
-    const children = a.project().gates.filter((g) => compatible(g, d));
+    const geo = geometry(stage, d);
+    if (!geo.contains(e)) return [];
+    const gates = a.project().gates;
+    const visibleIds = new Set(
+      card.displayGates ??
+        gates
+          .filter((g) => g.parent === d.gateId && compatible(g, d))
+          .map((g) => g.id),
+    );
+    const children = gates.filter(
+      (g) => visibleIds.has(g.id) && compatible(g, d),
+    );
     const direct = (e.target as Element).closest<SVGElement>("[data-shape]")
       ?.dataset.shape;
     const inside = children

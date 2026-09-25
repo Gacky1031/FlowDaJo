@@ -37,7 +37,8 @@
       "runtime/sources/": "runtime/sources/",
       "runtime/r-manifest.json": "runtime/r-manifest.json",
       "runtime/THIRD-PARTY-NOTICES.md": "runtime/THIRD-PARTY-NOTICES.md",
-      "../r/worksheet.R": "r/worksheet.R"
+      "../r/worksheet.R": "r/worksheet.R",
+      "../r/diva.R": "r/diva.R"
     },
     "windows": {
       "webviewInstallMode": {

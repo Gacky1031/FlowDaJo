@@ -22,9 +22,12 @@ test("v0.4 scientific rendering payload, gates, modes, and vector/statistics exp
     assert.deepEqual(result.errors, []);
     for (const mode of modes) assert.equal(result.plots[mode].mode, mode);
     const scatter = result.plots.scatter;
-    assert.ok(scatter.excluded > 0, "nonpositive log intensities are excluded from rendering");
+    assert.equal(scatter.excluded, 0, "nonpositive log intensities are pinned to the plot edge");
     assert.equal(scatter.total, 16000);
-    assert.ok(scatter.xTicks.every(t => t.value === Math.log10(Number(t.label.replaceAll(",", ""))) || t.label.includes("e")));
+    assert.ok(scatter.xTicks.some(t => t.value === 3 && t.label === "10³"));
+    assert.ok(scatter.xTicks.some(t => t.major === false && t.label === ""), "log scale includes unlabeled minor ticks");
+    assert.ok(scatter.xTicks.every(t => !t.label.includes("e") && !t.label.includes("E")));
+    assert.ok(result.plots.histogram.excluded > 0, "histogram still excludes undefined logarithms");
     assert.equal(result.plots.histogram.histogram.rawCounts.reduce((a,b) => a+b, 0), 16000 - result.plots.histogram.excluded);
     assert.ok(Math.abs(result.plots.cdf.cdf.y.at(-1) - 100) < 1e-12);
     for (const mode of ["density", "contour", "pseudocolor", "zebra"]) {
@@ -35,13 +38,25 @@ test("v0.4 scientific rendering payload, gates, modes, and vector/statistics exp
       assert.ok(d.levels.length > 1, "scalar contour spacing produces a contour series");
     }
     assert.equal(result.plots.pseudocolor.pointDensity.length, result.plots.pseudocolor.xValues.length);
+    const narrow = await w.call({ action: "worksheet", project, sampleId: sample.id,
+      plots: [{ ...base, id: "narrow", mode: "scatter", x: { ...base.x, min: 1, max: 2 }, y: { ...base.y, min: 0, max: 3 } }] });
+    assert.deepEqual(narrow.errors, []);
+    assert.ok(narrow.plots.narrow.xValues.some(v => v > 2), "out-of-range events remain in the dot payload for edge rendering");
+    const preview = await w.call({ action: "axis_preview", project, sampleId: sample.id, population: [],
+      axis: { ...base.x, min: 1, max: 2 } });
+    assert.equal(preview.counts.length, 64);
+    assert.ok(preview.outside > 0);
+    assert.ok(preview.ticks.some(t => t.major === false));
+    const linearPreview = await w.call({ action: "axis_preview", project, sampleId: sample.id, population: [],
+      axis: { ...axis("FSC-A"), min: 0, max: 200000 } });
+    assert.ok(linearPreview.ticks.some(t => t.label === "100,000"), "linear ticks use ordinary numbers");
 
     project.gates.push({ id: "positive", name: "Positive", sampleId: sample.id, parent: "root", type: "range",
       x: axis("FITC-A", "log"), y: axis("PE-A", "logicle"), bounds: [-10, 6] });
     const gated = await w.call({ action: "worksheet", project, sampleId: sample.id,
       plots: [{ ...base, id: "gated", mode: "histogram", population: ["Positive"] }] });
     assert.deepEqual(gated.errors, []);
-    assert.equal(gated.plots.gated.total, 16000 - scatter.excluded, "log range gate rejects nonpositive raw values");
+    assert.equal(gated.plots.gated.total, 16000 - result.plots.histogram.excluded, "log range gate rejects nonpositive raw values unless extended to the edge");
 
     project.gates.push({ id: "empty", name: "Empty", sampleId: sample.id, parent: "root", type: "range",
       x: axis("FITC-A", "log"), y: axis("PE-A", "logicle"), bounds: [99, 100] });
@@ -56,7 +71,7 @@ test("v0.4 scientific rendering payload, gates, modes, and vector/statistics exp
 
     project.gates.push({id:"negative",name:"Negative",sampleId:sample.id,parent:"root",type:"range",x:axis("FITC-A"),y:axis("PE-A"),bounds:[-1e6,-.001]});
     const negative=await w.call({action:"worksheet",project,sampleId:sample.id,plots:[{...base,id:"negative-log",mode:"density",population:["Negative"]}]});
-    assert.deepEqual(negative.errors,[]);assert.ok(negative.plots["negative-log"].total>0);assert.equal(negative.plots["negative-log"].excluded,negative.plots["negative-log"].total);assert.ok(negative.plots["negative-log"].density.z.every(v=>v===0));
+    assert.deepEqual(negative.errors,[]);assert.ok(negative.plots["negative-log"].total>0);assert.equal(negative.plots["negative-log"].excluded,0);assert.ok(negative.plots["negative-log"].density.z.some(v=>v>0));
     const csv = join(storage, "statistics.csv"), pdf = join(storage, "plot.pdf"), svg = join(storage, "plot.svg");
     sample.name = "=日本語";
     await w.call({ action: "statistics_csv", project, sampleIds: [sample.id], path: csv });

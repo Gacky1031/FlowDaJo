@@ -1,6 +1,6 @@
 import type { WorksheetData, WorksheetPlot } from "./types";
 
-type Tick = { value: number; label: string };
+type Tick = { value: number; label: string; major?: boolean };
 type Density = {
   x: number[];
   y: number[];
@@ -12,12 +12,25 @@ type Density = {
 
 const finite = (n: number) => Number.isFinite(n);
 const clamp = (n: number, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, n));
+const superscriptDigits = ["⁰", "¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹"];
+const superscript = (value: number) =>
+  `${value < 0 ? "⁻" : ""}${String(Math.abs(value))
+    .split("")
+    .map((digit) => superscriptDigits[Number(digit)])
+    .join("")}`;
 const fallbackTick = (v: number) => {
   const a = Math.abs(v);
   if (!finite(v)) return "";
-  if (a >= 1e5 || (a > 0 && a < 0.01))
-    return v.toExponential(1).replace("e+", "e");
-  if (a >= 1000) return `${+(v / 1000).toFixed(a >= 10000 ? 0 : 1)}k`;
+  if (a >= 1000 || (a > 0 && a < 0.01)) {
+    let exponent = Math.floor(Math.log10(a));
+    let mantissa = +(a / 10 ** exponent).toPrecision(2);
+    if (mantissa >= 10) {
+      exponent++;
+      mantissa = 1;
+    }
+    const coefficient = mantissa === 1 ? "" : `${mantissa}×`;
+    return `${v < 0 ? "−" : ""}${coefficient}10${superscript(exponent)}`;
+  }
   return `${+v.toPrecision(4)}`;
 };
 
@@ -29,7 +42,16 @@ export function geometry(stage: HTMLElement, d: WorksheetData) {
     top = 25,
     bottom = h - 53,
     dx = d.xRange[1] - d.xRange[0] || 1,
-    dy = d.yRange[1] - d.yRange[0] || 1;
+    dy = d.yRange[1] - d.yRange[0] || 1,
+    box = stage.getBoundingClientRect(),
+    localPoint = (e: PointerEvent | MouseEvent) => [
+      ((e.clientX - box.left) * w) / (box.width || w),
+      ((e.clientY - box.top) * h) / (box.height || h),
+    ],
+    contains = (e: PointerEvent | MouseEvent) => {
+      const [x, y] = localPoint(e);
+      return x >= left && x <= right && y >= top && y <= bottom;
+    };
   const px = (x: number) => left + ((x - d.xRange[0]) / dx) * (right - left);
   const py = (y: number) => bottom - ((y - d.yRange[0]) / dy) * (bottom - top);
   return {
@@ -41,10 +63,11 @@ export function geometry(stage: HTMLElement, d: WorksheetData) {
     bottom,
     px,
     py,
+    contains,
     point: (e: PointerEvent | MouseEvent) => {
-      const box = stage.getBoundingClientRect();
-      const x = clamp(e.clientX - box.left, left, right);
-      const y = clamp(e.clientY - box.top, top, bottom);
+      const [localX, localY] = localPoint(e);
+      const x = clamp(localX, left, right);
+      const y = clamp(localY, top, bottom);
       return [
         d.xRange[0] + ((x - left) / Math.max(1, right - left)) * dx,
         d.yRange[0] + ((bottom - y) / Math.max(1, bottom - top)) * dy,
@@ -87,11 +110,11 @@ const quantileScale = (values: number[]) => {
   return (v: number) => clamp((v - lo) / (hi - lo || 1));
 };
 
-function ticks(range: [number, number], supplied?: Tick[]) {
+function ticks(range: [number, number], supplied?: Tick[], scale = "linear") {
   if (supplied?.length) return supplied.filter((t) => finite(t.value));
   return Array.from({ length: 5 }, (_, i) => {
     const value = range[0] + ((range[1] - range[0]) * i) / 4;
-    return { value, label: fallbackTick(value) };
+    return { value, label: scale === "linear" ? Number(value.toPrecision(4)).toLocaleString() : fallbackTick(value) };
   });
 }
 
@@ -101,7 +124,7 @@ function spacedTicks(
   minimum: number,
 ) {
   const ordered = source
-    .filter((tick) => finite(position(tick.value)))
+    .filter((tick) => !!tick.label && finite(position(tick.value)))
     .sort((a, b) => position(a.value) - position(b.value));
   const zero = ordered.find((tick) => tick.value === 0);
   const keep: Tick[] = zero ? [zero] : [];
@@ -210,6 +233,7 @@ function points(
   const n = pairs ? pairs.length : Math.min(xs!.length, ys!.length);
   const densities = (d as WorksheetData & { pointDensity?: number[] })
     .pointDensity;
+  const pointColors = d.pointColors;
   const densityScale = quantileScale(densities ?? []);
   const dotSize = clamp(style?.dotSize ?? d.dotSize ?? 1.6, 0.5, 12),
     alpha = clamp(style?.dotOpacity ?? d.dotOpacity ?? 0.6, 0.03, 1);
@@ -225,13 +249,17 @@ function points(
       (!densities || !finite(densities[i]) || densities[i] >= outlierThreshold)
     )
       continue;
+    const pointColor = pointColors?.[i];
+    const ink = pointColor && /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(pointColor)
+      ? rgb(pointColor)
+      : base;
     ctx.fillStyle = colored
       ? heat(q, true)
-      : `rgba(${base.join(",")},${alpha})`;
+      : `rgba(${ink.join(",")},${alpha})`;
     ctx.globalAlpha = colored ? alpha + (1 - alpha) * 0.45 : 1;
     const r = dotSize / 2;
     ctx.beginPath();
-    ctx.arc(g.px(x), g.py(y), r, 0, Math.PI * 2);
+    ctx.arc(clamp(g.px(x), g.left, g.right), clamp(g.py(y), g.top, g.bottom), r, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.globalAlpha = 1;
@@ -302,18 +330,30 @@ export function drawPlot(
   ctx.font = "11px Segoe UI, Arial, sans-serif";
   ctx.textBaseline = "middle";
 
-  const xt = spacedTicks(ticks(d.xRange, d.xTicks), g.px, 35);
-  const yt = spacedTicks(ticks(d.yRange, d.yTicks), g.py, 18);
+  const allX = ticks(d.xRange, d.xTicks, d.x.scale);
+  const allY = ticks(d.yRange, d.yTicks, d.y.scale);
+  const xt = spacedTicks(allX, g.px, 35);
+  const yt = spacedTicks(allY, g.py, 18);
   ctx.strokeStyle = "#171a1c";
   ctx.fillStyle = "#30363a";
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(g.left, g.top);
   ctx.lineTo(g.left, g.bottom);
-  ctx.lineTo(g.right, g.bottom);
+  if (style?.showXAxis !== false) ctx.lineTo(g.right, g.bottom);
   ctx.stroke();
+  if (style?.showXAxis !== false) allX.filter((t) => !t.label).forEach((t) => {
+    const x = g.px(t.value);
+    if (x < g.left || x > g.right) return;
+    ctx.beginPath(); ctx.moveTo(x, g.bottom); ctx.lineTo(x, g.bottom + 2.5); ctx.stroke();
+  });
+  allY.filter((t) => !t.label).forEach((t) => {
+    const y = g.py(t.value);
+    if (y < g.top || y > g.bottom) return;
+    ctx.beginPath(); ctx.moveTo(g.left - 2.5, y); ctx.lineTo(g.left, y); ctx.stroke();
+  });
   ctx.textAlign = "center";
-  xt.forEach((t) => {
+  if (style?.showXAxis !== false) xt.forEach((t) => {
     const x = g.px(t.value);
     if (x < g.left - 1 || x > g.right + 1) return;
     ctx.beginPath();

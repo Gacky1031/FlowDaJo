@@ -1,6 +1,7 @@
 // Development-only bridge for interaction tests. Never imported by production.
 import { createServer } from "vite";
-import { mkdtempSync } from "node:fs";
+import { copyFileSync, mkdtempSync, unlinkSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { rWorker } from "../tests/r-worker.mjs";
@@ -14,7 +15,7 @@ const server = await createServer({
       transformIndexHtml(html) {
         return html.replace(
           "<head>",
-          `<head><script>window.isTauri=true;window.__TAURI_INTERNALS__={transformCallback:()=>1,metadata:{currentWindow:{label:'main'},currentWebview:{label:'main'}},invoke:async(cmd,args)=>{if(cmd==='request'){const r=await fetch('/__test_rpc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(args.payload)});const v=await r.json();if(!v.ok)throw Error(v.error);return v.data;}if(cmd==='plugin:dialog|save')return args.options.defaultPath.endsWith('.csv')?${JSON.stringify(resolve("artifacts/ui-statistics.csv"))}:args.options.defaultPath.endsWith('.svg')?${JSON.stringify(resolve("artifacts/ui-plot.svg"))}:args.options.defaultPath.endsWith('.pdf')?${JSON.stringify(resolve("artifacts/ui-worksheet.pdf"))}:args.options.defaultPath.endsWith('.flowdesk-worksheet.json')?${JSON.stringify(resolve("artifacts/ui-template.json"))}:${JSON.stringify(resolve("artifacts/ui-workspace.json"))};if(cmd==='plugin:dialog|open')return ${JSON.stringify(resolve("artifacts/ui-workspace.json"))};if(cmd==='plugin:dialog|message')return 'Ok';if(cmd==='plugin:dialog|confirm')return true;return 1;}};</script>`,
+          `<head><script>window.isTauri=true;window.__TAURI_INTERNALS__={transformCallback:()=>1,metadata:{currentWindow:{label:'main'},currentWebview:{label:'main'}},invoke:async(cmd,args)=>{if(cmd==='request'){const r=await fetch('/__test_rpc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(args.payload)});const v=await r.json();if(!v.ok)throw Error(v.error);return v.data;}if(cmd==='plugin:dialog|save')return args.options.defaultPath.endsWith('.csv')?${JSON.stringify(resolve("artifacts/ui-statistics.csv"))}:args.options.defaultPath.endsWith('.svg')?${JSON.stringify(resolve("artifacts/ui-plot.svg"))}:args.options.defaultPath.endsWith('.pdf')?${JSON.stringify(resolve("artifacts/ui-worksheet.pdf"))}:args.options.defaultPath.endsWith('.flowdesk-worksheet.json')?${JSON.stringify(resolve("artifacts/ui-template.json"))}:${JSON.stringify(resolve("artifacts/ui-workspace.json"))};if(cmd==='plugin:dialog|open')return ${JSON.stringify(resolve("artifacts/ui-workspace.json"))};if(cmd==='plugin:dialog|message')return args.buttons==='OkCancel' && window.__FLOWDESK_TEST_CONFIRM__ === false ? 'Cancel' : 'Ok';if(cmd==='plugin:dialog|confirm')return window.__FLOWDESK_TEST_CONFIRM__ ?? true;return 1;}};</script>`,
         );
       },
       configureServer(server) {
@@ -43,9 +44,17 @@ const server = await createServer({
             res.setHeader("Content-Type", "application/json");
             try {
               const payload = JSON.parse(body);
-              res.end(
-                JSON.stringify({ ok: true, data: await worker.call(payload) }),
-              );
+              const data = await worker.call(payload);
+              if (payload.action === "worksheet_pdf" && data.pageFiles?.length) {
+                try {
+                  if (data.pageFiles.length === 1) copyFileSync(data.pageFiles[0], payload.path);
+                  else execFileSync("pdfunite", [...data.pageFiles, payload.path]);
+                } finally {
+                  for (const file of data.pageFiles) unlinkSync(file);
+                }
+                delete data.pageFiles;
+              }
+              res.end(JSON.stringify({ ok: true, data }));
             } catch (e) {
               res.end(JSON.stringify({ ok: false, error: String(e) }));
             }

@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod worker;
+mod pdf;
 use serde_json::Value;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -131,5 +132,26 @@ mod tests {
         assert!(call(serde_json::json!({"action":"analyze","sampleId":"missing","project":{"schema":"flowdesk-r/1","samples":[],"gates":[]}})).is_err());
         let b = call(serde_json::json!({"action":"health"})).unwrap();
         assert_eq!(a["workerPid"], b["workerPid"]);
+    }
+    #[test]
+    fn worksheet_pdf_merges_landscape_and_portrait_from_r() {
+        let demo = call(serde_json::json!({"action":"demo"})).unwrap();
+        let path = std::env::temp_dir().join(format!("flowdesk-a4-{}.pdf", std::process::id()));
+        let axis_x = serde_json::json!({"channel":"FSC-A","scale":"linear","w":0.5,"t":262144,"m":4.5,"a":0});
+        let axis_y = serde_json::json!({"channel":"SSC-A","scale":"linear","w":0.5,"t":262144,"m":4.5,"a":0});
+        let response = call(serde_json::json!({
+            "action":"worksheet_pdf",
+            "path":path,
+            "sampleId":"demo-42",
+            "project":{"schema":"flowdesk-r/1","name":"A4 integration","samples":demo["samples"],"gates":[],"selectedGate":"root"},
+            "plots":[{"id":"first","sampleId":"active","population":[],"mode":"scatter","x":axis_x,"y":axis_y,"left":24,"top":24,"width":344,"height":314}],
+            "widgets":[],
+            "includeWidgets":false,
+            "printPages":[{"left":0,"top":0,"orientation":"landscape"},{"left":1200,"top":0,"orientation":"portrait"}]
+        })).unwrap();
+        assert_eq!(response["pages"], 2);
+        let document = lopdf::Document::load(&path).unwrap();
+        assert_eq!(document.get_pages().len(), 2);
+        let _ = std::fs::remove_file(path);
     }
 }
