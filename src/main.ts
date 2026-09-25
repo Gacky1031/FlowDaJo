@@ -741,7 +741,7 @@ function tree() {
             .join("")
         );
       };
-      return `<div class="sample-group"><button class="sample ${s.id === sampleId ? "selected" : ""}" type="button" data-sample="${esc(s.id)}" title="クリックで選択、↑↓キーで移動、ドラッグで並び替え"><span class="sample-drag-handle" aria-hidden="true">⠿</span> ${esc(s.name)}<small>${fmt(s.events)} events · ${s.compensation.enabled ? "Comp ON" : "Comp OFF"}</small></button>${s.id === sampleId ? nodes("root", 0) : ""}</div>`;
+      return `<div class="sample-group"><button class="sample ${s.id === sampleId ? "selected" : ""}" type="button" draggable="true" data-sample="${esc(s.id)}" title="クリックで選択、↑↓キーで移動、ドラッグで並び替え"><span class="sample-drag-handle" aria-hidden="true">⠿</span> ${esc(s.name)}<small>${fmt(s.events)} events · ${s.compensation.enabled ? "Comp ON" : "Comp OFF"}</small></button>${s.id === sampleId ? nodes("root", 0) : ""}</div>`;
     })
     .join("");
 }
@@ -760,6 +760,20 @@ function sortSamples(mode: "import" | "name" | "manual") {
   project.sampleSort = mode;
   if (mode === "import") project.samples.sort((a, b) => (a.importOrder ?? 0) - (b.importOrder ?? 0));
   if (mode === "name") project.samples.sort((a, b) => a.name.localeCompare(b.name, "ja", { numeric: true }) || (a.importOrder ?? 0) - (b.importOrder ?? 0));
+}
+function reorderSample(sourceId: string, targetId: string, insertAfter: boolean) {
+  const reordered = [...project.samples];
+  const from = reordered.findIndex((item) => item.id === sourceId);
+  if (from < 0 || sourceId === targetId) return;
+  const [moving] = reordered.splice(from, 1);
+  const targetIndex = reordered.findIndex((item) => item.id === targetId);
+  if (targetIndex < 0) return;
+  reordered.splice(targetIndex + (insertAfter ? 1 : 0), 0, moving);
+  if (reordered.every((item, index) => item.id === project.samples[index]?.id)) return;
+  remember();
+  project.samples = reordered;
+  sortSamples("manual");
+  changed(false);
 }
 function nextSampleImportOrder() {
   return Math.max(-1, ...project.samples.map((item) => item.importOrder ?? -1)) + 1;
@@ -849,6 +863,7 @@ function render() {
       "",
     )}</div><div class="gate-scope" aria-label="分画の適用範囲"><span>新規分画:</span><button type="button" data-gate-scope="sample" class="${gateScopeMode === "sample" ? "active" : ""}" title="選択中のサンプルだけに適用">個別適用</button><button type="button" data-gate-scope="global" class="${gateScopeMode === "global" ? "active" : ""}" title="全サンプルに適用">全体適用</button></div><div class="gate-filter" aria-label="分画表示"><span>分画:</span><button type="button" data-gate-filter="all" class="${gateFilter === "all" ? "active" : ""}">すべて</button><button type="button" data-gate-filter="global" class="${gateFilter === "global" ? "active" : ""}">Global</button><button type="button" data-gate-filter="sample" class="${gateFilter === "sample" ? "active" : ""}">個別</button></div></div><div class="viewport"><div class="board" style="width:${boardWidth}px;height:${boardHeight}px">${printPages.map(printPageMarkup).join("")}${sheet().plots.map(plotCard).join("")}${statisticsWidgets.map(statisticsWidget).join("")}${compensationWidgets.map(compensationWidget).join("")}${!sheet().plots.length && !widgets.length ? '<div class="empty"><h1>' + (worksheetMode() === "normal" ? "Normal sheet" : "Global worksheet") + '</h1><p>' + (worksheetMode() === "normal" ? "複数サンプルの分画プロットを並べて比較できます。" : "選択中の1サンプルを共通軸で解析します。") + '<br>左の集団をドラッグ、または「＋ Plot」で始めます。</p></div>' : ""}</div></div></main></div><footer></footer>`;
   document.querySelector<HTMLElement>(".browser h2")?.insertAdjacentHTML("afterend", `<label class="sample-sort-control">並び順 <select id="sample-sort" aria-label="サンプルの並び順">${selectOptions([{ value: "import", label: "取り込み順" }, { value: "name", label: "名前順" }, { value: "manual", label: "手動" }], project.sampleSort ?? "import")}</select></label>`);
+  decorateSampleOrder();
   document.querySelector<HTMLElement>(".toolbar")?.insertAdjacentHTML(
     "beforeend",
     '<button id="toggle-left-sidebar" type="button" aria-label="サンプル欄を切り替え" title="サンプルと集団のサイドバーを表示・非表示">サンプル欄を隠す</button>',
@@ -878,15 +893,13 @@ function decorateSampleOrder() {
       const button = document.createElement("button");
       button.textContent = label;
       button.title = delta < 0 ? "サンプルを上へ" : "サンプルを下へ";
+      button.setAttribute("aria-label", button.title);
       button.onclick = (event) => {
         event.stopPropagation();
         const index = project.samples.findIndex((item) => item.id === sampleButton.dataset.sample);
         const destination = index + delta;
         if (index < 0 || destination < 0 || destination >= project.samples.length) return;
-        remember();
-        [project.samples[index], project.samples[destination]] = [project.samples[destination], project.samples[index]];
-        sortSamples("manual");
-        changed(false);
+        reorderSample(sampleButton.dataset.sample!, project.samples[destination].id, delta < 0);
       };
       controls.append(button);
     }
@@ -1737,6 +1750,7 @@ function changeGateScope(
   g: Gate,
   next: "global" | "sample",
   targetSampleId: string | undefined,
+  individualizeMode: "remove-others" | "copy-others" = "remove-others",
 ) {
   const target = targetSampleId ? sample(targetSampleId) : undefined;
   if (!target) {
@@ -1772,6 +1786,15 @@ function changeGateScope(
       message("対象サンプルにゲートの軸チャンネルがありません。", true);
       return;
     }
+    if (individualizeMode === "copy-others") {
+      const missing = project.samples.find((candidate) => candidate.id !== target.id &&
+        !branch.every((gate) => candidate.channels.some((channel) => channel.id === gate.x.channel) &&
+          candidate.channels.some((channel) => channel.id === gate.y.channel)));
+      if (missing) {
+        message(`「${missing.name}」にゲートの軸チャンネルがないため、全サンプルには個別化できません。`, true);
+        return;
+      }
+    }
   } else {
     const missing = project.samples.find(
       (candidate) =>
@@ -1786,33 +1809,114 @@ function changeGateScope(
       return;
     }
   }
-  for (const candidate of branch) {
-    const conflict = project.gates.find(
-      (other) =>
-        !ids.has(other.id) &&
-        other.parent === candidate.parent &&
-        other.name === candidate.name &&
-        (next === "global"
-          ? true
-          : gateAppliesToSample(other, target.id)),
-    );
-    if (conflict) {
-      message("同じ親集団に同名の分画があるため変更できません。", true);
-      return;
+  const branchesBySample = new Map<string, Gate[]>([[target.id, branch]]);
+  if (next === "sample" && individualizeMode === "copy-others") {
+    for (const destination of project.samples.filter((candidate) => candidate.id !== target.id)) {
+      const destinationBranch = gateBranchForScope(g, destination.id);
+      if (!destinationBranch.every((gate) => destination.channels.some((channel) => channel.id === gate.x.channel) &&
+        destination.channels.some((channel) => channel.id === gate.y.channel))) {
+        message(`「${destination.name}」にゲートの軸チャンネルがないため、全サンプルには個別化できません。`, true);
+        return;
+      }
+      branchesBySample.set(destination.id, destinationBranch);
     }
   }
+  const removedForOtherSamples = next === "sample" && individualizeMode === "remove-others"
+    ? project.samples.filter((candidate) => candidate.id !== target.id).flatMap((destination) =>
+        gateBranchForScope(g, destination.id).filter((candidate) =>
+          gateScope(candidate) === "sample" && candidate.sampleId === destination.id))
+    : [];
+  const removedOtherIds = new Set(removedForOtherSamples.map((candidate) => candidate.id));
+  for (const [destinationId, destinationBranch] of branchesBySample) {
+    const destinationIds = new Set(destinationBranch.map((candidate) => candidate.id));
+    for (const candidate of destinationBranch) {
+      const conflict = project.gates.find((other) =>
+        !destinationIds.has(other.id) && other.parent === candidate.parent && other.name === candidate.name &&
+        (next === "global" || gateAppliesToSample(other, destinationId)));
+      if (conflict) {
+        const destination = sample(destinationId);
+        message(`${destination ? `「${destination.name}」で` : ""}同じ親集団に同名の分画があるため変更できません。`, true);
+        return;
+      }
+    }
+  }
+  const clones = individualizeMode === "copy-others" && next === "sample"
+    ? project.samples.filter((candidate) => candidate.id !== target.id).map((destination) => {
+        const sourceBranch = branchesBySample.get(destination.id)!;
+        const gateIds = new Map<string, string>(sourceBranch.map((candidate): [string, string] => [candidate.id, uid()]));
+        const groupIds = new Map<string, string>([...new Set(sourceBranch.map((candidate) => candidate.groupId).filter((id): id is string => !!id))].map((id): [string, string] => [id, uid()]));
+        const gates = sourceBranch.map((candidate) => ({
+          ...structuredClone(candidate),
+          id: gateIds.get(candidate.id)!,
+          parent: gateIds.get(candidate.parent) ?? candidate.parent,
+          groupId: candidate.groupId ? groupIds.get(candidate.groupId) : undefined,
+          sampleId: destination.id,
+          scope: "sample" as const,
+        }));
+        return { destination, gateIds, gates };
+      })
+    : [];
   remember();
   for (const candidate of branch) {
     candidate.scope = next;
-    candidate.sampleId = next === "sample" ? target.id : target.id;
+    candidate.sampleId = target.id;
+  }
+  if (next === "sample" && individualizeMode === "copy-others") {
+    for (const clone of clones) {
+      project.gates.push(...clone.gates);
+      for (const worksheet of project.worksheets ?? []) for (const plot of worksheet.plots) {
+        if (plot.sampleId === clone.destination.id && plot.displayGates)
+          plot.displayGates = plot.displayGates.map((id) => clone.gateIds.get(id) ?? id);
+      }
+    }
+    for (const worksheet of project.worksheets ?? []) for (const plot of worksheet.plots) {
+      if (plot.sampleId !== "active" || !plot.displayGates) continue;
+      const copies = clones.flatMap((clone) => plot.displayGates!.map((id) => clone.gateIds.get(id)).filter((id): id is string => !!id));
+      plot.displayGates = [...new Set([...plot.displayGates, ...copies])];
+    }
+  } else if (next === "sample") {
+    project.gates = project.gates.filter((candidate) => !removedOtherIds.has(candidate.id));
+    for (const worksheet of project.worksheets ?? []) for (const plot of worksheet.plots) {
+      if (plot.sampleId !== "active" && plot.sampleId !== target.id && plot.displayGates)
+        plot.displayGates = plot.displayGates.filter((id) => !ids.has(id) && !removedOtherIds.has(id));
+      if (plot.sampleId !== "active" && plot.sampleId !== target.id && removedForOtherSamples.some((gate) => gate.sampleId === plot.sampleId)) {
+        while (plot.population.length && resolveGate(project, plot.population, plot.sampleId) === undefined)
+          plot.population.pop();
+      }
+    }
   }
   selectedGate = g.id;
   changed();
   message(
     next === "sample"
-      ? "選択した分画をこのサンプルの個別ゲートへ移動しました。"
+      ? individualizeMode === "copy-others"
+        ? "選択した分画を各サンプルの個別ゲートにしました。"
+        : "選択した分画をこのサンプルだけの個別ゲートにしました。"
       : "選択した分画を全サンプル共通のGlobalゲートへ戻しました。",
   );
+}
+function individualizeGateDialog(g: Gate, targetSampleId: string | undefined) {
+  if (!targetSampleId) {
+    message("個別ゲートにするサンプルを選択してください。", true);
+    return;
+  }
+  const target = sample(targetSampleId);
+  if (!target) return;
+  const dialog = document.createElement("dialog");
+  dialog.className = "axis-dialog individualize-gate-dialog";
+  dialog.setAttribute("aria-label", "個別ゲートの適用先");
+  dialog.innerHTML = `<form><h2>「${esc(g.name)}」を個別ゲートにする</h2><p class="hint">${esc(target.name)}では、この分画を個別に編集できるようにします。他のサンプルでの扱いを選んでください。</p><label class="scope-choice"><input type="radio" name="others" value="remove-others" checked><span><strong>他のサンプルでは削除</strong><small>このサンプルだけに分画を残します。</small></span></label><label class="scope-choice"><input type="radio" name="others" value="copy-others"><span><strong>他のサンプルでも個別ゲートとして残す</strong><small>各サンプルに独立して編集できるコピーを作ります。</small></span></label><div class="axis-dialog-actions"><button type="button" data-cancel>キャンセル</button><button class="primary" type="submit">個別ゲートに変更</button></div></form>`;
+  document.body.append(dialog);
+  const close = () => { if (dialog.open) dialog.close(); dialog.remove(); refreshInspector(); };
+  dialog.querySelector<HTMLButtonElement>("[data-cancel]")!.onclick = close;
+  dialog.addEventListener("cancel", (event) => { event.preventDefault(); close(); });
+  dialog.querySelector("form")!.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const mode = dialog.querySelector<HTMLInputElement>('[name="others"]:checked')!.value as "remove-others" | "copy-others";
+    close();
+    changeGateScope(g, "sample", targetSampleId, mode);
+  });
+  dialog.showModal();
 }
 function preparePlotContextSelection(plot: WorksheetPlot) {
   if (!selectedCards.has(plot.id)) {
@@ -1861,10 +1965,10 @@ function plotSettingsActions(): MenuAction[] {
     { label: "Normal: 選択項目を他サンプルへ展開…", disabled: worksheetMode() !== "normal", run: () => batchWorksheetItemsToSamples() },
   ];
 }
-function gateMenu(g: Gate, x: number, y: number, c?: WorksheetPlot, widget?: WorksheetWidget) {
+function gateMenu(g: Gate, x: number, y: number, c?: WorksheetPlot, widget?: WorksheetWidget, sampleOverride?: string) {
   selectedGate = g.id;
   refreshInspector();
-  const targetSampleId = c ? cardSample(c)?.id : sampleId;
+  const targetSampleId = c ? cardSample(c)?.id : sampleOverride ?? sampleId;
   const stat = targetSampleId
     ? data.stats[targetSampleId]?.find((v) => v.id === g.id)
     : undefined;
@@ -1894,9 +1998,9 @@ function gateMenu(g: Gate, x: number, y: number, c?: WorksheetPlot, widget?: Wor
     { label: "集団名を変更…", run: () => renameGateDialog(g) },
     gateScope(g) === "global"
       ? {
-          label: "このサンプルの個別ゲートへ移動",
+          label: "個別ゲートに変更…",
           disabled: !targetSampleId,
-          run: () => changeGateScope(g, "sample", targetSampleId),
+          run: () => individualizeGateDialog(g, targetSampleId),
         }
       : {
           label: "全体ゲートへ戻す",
@@ -2380,7 +2484,7 @@ function wire() {
             ),
           );
         document.querySelector("#tree")!.innerHTML = tree();
-  decorateSampleOrder();
+        decorateSampleOrder();
       }),
   );
   document.querySelectorAll<HTMLInputElement>("[data-select-card]").forEach(
@@ -2455,70 +2559,46 @@ function wire() {
     chooseSample(next.id);
     [...document.querySelectorAll<HTMLButtonElement>("#tree button.sample[data-sample]")].find((item) => item.dataset.sample === next.id)?.focus();
   });
-  // Pointer movement works consistently in WebView2, including when the
-  // selected sample's population tree is expanded below its row.
-  let suppressSampleClick = false;
-  treeElement.addEventListener("click", (event) => {
-    if (!suppressSampleClick || !(event.target as Element).closest("button.sample")) return;
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    suppressSampleClick = false;
-  }, true);
-  treeElement.addEventListener("pointerdown", (event) => {
-    const button = (event.target as Element).closest<HTMLButtonElement>("button.sample[data-sample]");
-    if (!button || event.button !== 0) return;
-    const sourceId = button.dataset.sample!;
-    const startX = event.clientX, startY = event.clientY;
-    let dragging = false;
-    let destinationId = "";
-    let insertAfter = false;
-    const move = (pointer: PointerEvent) => {
-      if (pointer.pointerId !== event.pointerId) return;
-      if (!dragging && Math.hypot(pointer.clientX - startX, pointer.clientY - startY) < 6) return;
-      dragging = true;
-      pointer.preventDefault();
-      button.classList.add("dragging");
-      const browser = treeElement.closest<HTMLElement>(".browser");
-      if (browser) {
-        const bounds = browser.getBoundingClientRect();
-        if (pointer.clientY < bounds.top + 24) browser.scrollTop -= 12;
-        if (pointer.clientY > bounds.bottom - 24) browser.scrollTop += 12;
-      }
-      const group = document.elementFromPoint(pointer.clientX, pointer.clientY)?.closest<HTMLElement>(".sample-group");
-      clearSampleDropMarkers();
-      destinationId = group?.querySelector<HTMLButtonElement>("button.sample")?.dataset.sample ?? "";
-      if (!group || destinationId === sourceId) return;
-      const target = group.querySelector<HTMLButtonElement>("button.sample")!;
-      insertAfter = pointer.clientY >= target.getBoundingClientRect().top + target.getBoundingClientRect().height / 2;
-      group.classList.add(insertAfter ? "drop-after" : "drop-before");
-    };
-    const cleanup = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", finish);
-      window.removeEventListener("pointercancel", cancel);
-      clearSampleDropMarkers();
-      button.classList.remove("dragging");
-    };
-    const finish = (pointer: PointerEvent) => {
-      if (pointer.pointerId !== event.pointerId) return;
-      cleanup();
-      if (!dragging) return;
-      suppressSampleClick = true;
-      window.setTimeout(() => { suppressSampleClick = false; }, 300);
-      if (!destinationId || destinationId === sourceId) return;
-      const from = project.samples.findIndex((item) => item.id === sourceId);
-      if (from < 0) return;
-      remember();
-      const [moving] = project.samples.splice(from, 1);
-      const destination = project.samples.findIndex((item) => item.id === destinationId) + (insertAfter ? 1 : 0);
-      project.samples.splice(destination, 0, moving);
-      sortSamples("manual");
-      changed(false);
-    };
-    const cancel = () => cleanup();
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", finish);
-    window.addEventListener("pointercancel", cancel);
+  const sampleDragType = "application/x-flowdesk-sample-order";
+  let draggedSampleId = "";
+  treeElement.addEventListener("dragstart", (event) => {
+    const drag = event as DragEvent;
+    const button = (drag.target as Element).closest<HTMLButtonElement>("button.sample[data-sample]");
+    if (!button || !drag.dataTransfer) return;
+    draggedSampleId = button.dataset.sample!;
+    drag.dataTransfer.effectAllowed = "move";
+    drag.dataTransfer.setData(sampleDragType, draggedSampleId);
+    button.classList.add("dragging");
+  });
+  treeElement.addEventListener("dragover", (event) => {
+    const drag = event as DragEvent;
+    if (!drag.dataTransfer?.types.includes(sampleDragType)) return;
+    const group = (drag.target as Element).closest<HTMLElement>(".sample-group");
+    const target = group?.querySelector<HTMLButtonElement>("button.sample[data-sample]");
+    if (!group || !target || target.dataset.sample === draggedSampleId) return;
+    drag.preventDefault();
+    drag.dataTransfer.dropEffect = "move";
+    clearSampleDropMarkers();
+    const bounds = target.getBoundingClientRect();
+    group.classList.add(drag.clientY >= bounds.top + bounds.height / 2 ? "drop-after" : "drop-before");
+  });
+  treeElement.addEventListener("drop", (event) => {
+    const drag = event as DragEvent;
+    if (!drag.dataTransfer?.types.includes(sampleDragType)) return;
+    drag.preventDefault();
+    const group = (drag.target as Element).closest<HTMLElement>(".sample-group");
+    const target = group?.querySelector<HTMLButtonElement>("button.sample[data-sample]");
+    if (target) {
+      const bounds = target.getBoundingClientRect();
+      reorderSample(drag.dataTransfer.getData(sampleDragType) || draggedSampleId, target.dataset.sample!, drag.clientY >= bounds.top + bounds.height / 2);
+    }
+    draggedSampleId = "";
+    clearSampleDropMarkers();
+  });
+  treeElement.addEventListener("dragend", (event) => {
+    (event.target as Element).closest("button.sample")?.classList.remove("dragging");
+    draggedSampleId = "";
+    clearSampleDropMarkers();
   });
   document.querySelector("#tree")!.addEventListener("dragstart", (e) => {
     const ev = e as DragEvent,
@@ -2571,13 +2651,22 @@ function wire() {
     el.addEventListener("pointerdown", (event) => {
       const id = el.dataset.card!;
       const ev = event as PointerEvent;
-      if (ev.shiftKey || ev.ctrlKey || ev.metaKey) {
-        if (selectedCards.has(id)) selectedCards.delete(id);
-        else selectedCards.add(id);
-        render();
-        return;
-      }
+      const additive = ev.shiftKey || ev.ctrlKey || ev.metaKey;
+      // Keep the plot DOM mounted during pointer gestures. Re-rendering here
+      // tears down the canvas before its own pointer handlers can finish.
+      if ((!additive || tool !== "select") && activeCard !== id) activate(id);
+    });
+    el.addEventListener("click", (event) => {
+      const ev = event as MouseEvent;
+      const target = ev.target as Element;
+      if (!(ev.shiftKey || ev.ctrlKey || ev.metaKey) || tool !== "select" ||
+          target.closest("button,input,select,textarea,label,a,[data-axis-label],[data-axis-details]")) return;
+      const id = el.dataset.card!;
+      if (selectedCards.has(id)) selectedCards.delete(id);
+      else selectedCards.add(id);
       if (activeCard !== id) activate(id);
+      syncWorksheetSelection();
+      ev.preventDefault();
     });
     el.addEventListener("contextmenu", (event) => {
       if (event.defaultPrevented) return;
@@ -2647,7 +2736,7 @@ function wire() {
           g.id === el.dataset.pop &&
           gateAppliesToSample(g, el.dataset.sample ?? sampleId),
       );
-      if (g) { gateMenu(g, e.clientX, e.clientY, undefined, sourceWidget); return; }
+      if (g) { gateMenu(g, e.clientX, e.clientY, undefined, sourceWidget, el.dataset.sample); return; }
       if (!sourceWidget) return;
     }
     const widgetElement = (e.target as Element).closest<HTMLElement>("[data-statistics-widget],[data-compensation-widget]");
@@ -2780,36 +2869,73 @@ function wire() {
         const element = el.closest<HTMLElement>("[data-card],[data-statistics-widget],[data-compensation-widget]");
         if (!item || !element) return;
         const isCompWidget = "type" in item && item.type === "compensation";
-        const original = { left: item.left, top: item.top, width: item.width, height: item.height },
-          start = [e.clientX, e.clientY];
+        const isResize = !!el.dataset.resize;
+        if (!isResize) {
+          const selected = isWidget ? selectedWidgets.has(id) : selectedCards.has(id);
+          if (!selected) {
+            selectedCards.clear();
+            selectedWidgets.clear();
+            if (isWidget) selectedWidgets.add(id);
+            else selectedCards.add(id);
+            syncWorksheetSelection();
+          }
+        }
+        const movingItems = !isResize && selectedWorksheetItems().length
+          ? selectedWorksheetItems()
+          : [item];
+        const entries = movingItems.flatMap((movingItem) => {
+          const movingElement = "population" in movingItem
+            ? document.querySelector<HTMLElement>(`[data-card="${CSS.escape(movingItem.id)}"]`)
+            : movingItem.type === "compensation"
+              ? document.querySelector<HTMLElement>(`[data-compensation-widget="${CSS.escape(movingItem.id)}"]`)
+              : document.querySelector<HTMLElement>(`[data-statistics-widget="${CSS.escape(movingItem.id)}"]`);
+          return movingElement ? [{
+            item: movingItem,
+            element: movingElement,
+            left: movingItem.left,
+            top: movingItem.top,
+            width: movingItem.width,
+            height: movingItem.height,
+          }] : [];
+        });
+        if (!entries.length) return;
+        const original = entries.find((entry) => entry.item === item) ?? entries[0];
+        const start = [e.clientX, e.clientY];
+        const zoom = sheet().zoom ?? 1;
         let moved = false;
         gesture = true;
         el.setPointerCapture(e.pointerId);
         el.onpointermove = (ev) => {
-          const dx = ev.clientX - start[0],
-            dy = ev.clientY - start[1];
-          if (!moved && Math.abs(dx) + Math.abs(dy) < 3) return;
+          const screenDx = ev.clientX - start[0],
+            screenDy = ev.clientY - start[1];
+          if (!moved && Math.abs(screenDx) + Math.abs(screenDy) < 3) return;
           if (!moved) {
             remember();
             moved = true;
           }
-          if (el.dataset.resize) {
+          const dx = screenDx / zoom, dy = screenDy / zoom;
+          if (isResize) {
             item.width = Math.max(isCompWidget ? 420 : isWidget ? 380 : 280, original.width + dx);
             item.height = Math.max(isCompWidget ? 260 : isWidget ? 210 : 270, original.height + dy);
             element.style.width = `${item.width}px`;
             element.style.height = `${item.height}px`;
           } else {
-            item.left = Math.max(0, original.left + dx);
-            item.top = Math.max(0, original.top + dy);
-            element.style.left = `${item.left}px`;
-            element.style.top = `${item.top}px`;
+            const appliedDx = Math.max(-Math.min(...entries.map((entry) => entry.left)), dx);
+            const appliedDy = Math.max(-Math.min(...entries.map((entry) => entry.top)), dy);
+            for (const entry of entries) {
+              entry.item.left = entry.left + appliedDx;
+              entry.item.top = entry.top + appliedDy;
+              entry.element.style.left = `${entry.item.left}px`;
+              entry.element.style.top = `${entry.item.top}px`;
+            }
           }
         };
         const end = () => {
           el.onpointermove = null;
           el.onpointerup = null;
+          el.onpointercancel = null;
           gesture = false;
-          render();
+          if (moved) changed(false);
         };
         el.onpointerup = end;
         el.onpointercancel = end;
@@ -2984,7 +3110,8 @@ function wireInspector() {
       if (!g) return;
       const next = scope.value as "global" | "sample";
       const target = card() ? cardSample(card()!) : sample(g.sampleId);
-      changeGateScope(g, next, target?.id);
+      if (next === "sample" && gateScope(g) === "global") individualizeGateDialog(g, target?.id);
+      else changeGateScope(g, next, target?.id);
     };
   on("delete-gate", () => {
     const g = project.gates.find((g) => g.id === selectedGate);
@@ -3365,7 +3492,7 @@ function reportOptionsDialog(): Promise<{
 } | null> {
   const dialog = document.createElement("dialog");
   dialog.setAttribute("aria-label", "全サンプルPDFの出力内容");
-  dialog.innerHTML = `<form><h2>全サンプルPDFの出力内容</h2><p class="hint">Global worksheetを各サンプルへ展開して出力します。ワークシート上の統計ウィジェットは常に各サンプルページへ印刷します。</p><label class="check"><input name="plots" type="checkbox" checked> プロット</label><label class="check"><input name="statistics" type="checkbox" checked> 詳細な集団統計ページ</label><label class="check"><input name="compensation" type="checkbox" checked> Compensation / spillover 行列</label><div class="axis-dialog-actions"><button type="button" data-cancel>キャンセル</button><button class="primary" type="submit">PDFを生成</button></div></form>`;
+  dialog.innerHTML = `<form><h2>全サンプルPDFの出力内容</h2><p class="hint">ワークシートのA4印刷枠を、各サンプルに同じ向き・位置で適用します。ワークシート上の統計ウィジェットは各サンプルページへ印刷します。</p><label class="check"><input name="plots" type="checkbox" checked> プロット</label><label class="check"><input name="statistics" type="checkbox" checked> 詳細な集団統計ページ</label><label class="check"><input name="compensation" type="checkbox" checked> Compensation / spillover 行列</label><div class="axis-dialog-actions"><button type="button" data-cancel>キャンセル</button><button class="primary" type="submit">印刷プレビューへ</button></div></form>`;
   document.body.append(dialog);
   return new Promise((resolve) => {
     const close = (value: { plots: boolean; statistics: boolean; compensation: boolean } | null) => {
@@ -3392,6 +3519,168 @@ function reportOptionsDialog(): Promise<{
     });
     dialog.showModal();
   });
+}
+type PdfOptions = { plots: boolean; statistics: boolean; compensation: boolean };
+type PreviewElement = {
+  kind: "plot" | "statistics" | "detail";
+  id: string;
+  title: string;
+  detail: string;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  sampleId: string;
+  sourcePlotId?: string;
+  columns?: string[];
+  rows?: { label: string; values: string[] }[];
+};
+function printPreviewDialog(worksheet: boolean, options: PdfOptions): Promise<boolean> {
+  const printPages = sheet().printPages?.length
+    ? sheet().printPages!
+    : [{ id: "default", left: 0, top: 0, orientation: "landscape" as const, scale: 1 }];
+  const cards = worksheet || options.plots ? sheet().plots : [];
+  const widgets = (sheet().widgets ?? []).filter(isStatisticsWidget);
+  const pages: { sampleName: string; page: PrintPage; elements: PreviewElement[] }[] = [];
+  const widthOf = (item: PreviewElement) => item.width || (item.kind === "statistics" ? 640 : 344);
+  const heightOf = (item: PreviewElement) => item.height || (item.kind === "statistics" ? 340 : 314);
+  const cardFor = (card: WorksheetPlot, targetSample: Sample): PreviewElement => ({
+    kind: "plot", id: `${targetSample.id}/${card.id}`, sourcePlotId: card.id,
+    title: `${card.x.channel}  ×  ${oneDimensional(card) ? "Count" : card.y.channel}`,
+    detail: `${card.mode} · ${card.population.length ? card.population.join(" / ") : "All events"}`,
+    left: card.left, top: card.top, width: card.width, height: card.height,
+    sampleId: targetSample.id,
+  });
+  const widgetFor = (widget: StatisticsWidget, targetSample: Sample): PreviewElement => ({
+    kind: "statistics", id: `${targetSample.id}/${widget.id}`, title: "Population statistics",
+    detail: targetSample.name, left: widget.left, top: widget.top,
+    width: widget.width, height: widget.height, sampleId: targetSample.id,
+  });
+  const makeElements = (targetSample: Sample): PreviewElement[] => {
+    const sampleCards = cards.filter((card) => card.sampleId === "active" || card.sampleId === targetSample.id);
+    return [
+      ...sampleCards.map((card) => cardFor(card, targetSample)),
+      ...widgets.map((widget) => widgetFor(widget, targetSample)),
+    ];
+  };
+  const worksheetSample = sample() ?? project.samples[0];
+  const samplePages: { sampleName: string; elements: PreviewElement[] }[] = worksheet
+    ? worksheetSample ? [{
+        sampleName: worksheetMode() === "normal" ? "Normal worksheet" : worksheetSample.name,
+        elements: [
+          ...cards.map((card) => cardFor(card, project.samples.find((target) => target.id === card.sampleId) ?? worksheetSample)),
+          ...widgets.map((widget) => widgetFor(widget, project.samples.find((target) => target.id === widget.sampleId) ?? worksheetSample)),
+        ],
+      }] : []
+    : project.samples.map((targetSample) => ({ sampleName: targetSample.name, elements: makeElements(targetSample) }));
+  for (const group of samplePages) {
+    for (const page of printPages) {
+      const scale = page.scale ?? 1;
+      const coverage = printPageSize(page);
+      const safeMargin = 16 * scale;
+      const elements = group.elements.filter((item) =>
+        item.left >= page.left + safeMargin && item.top >= page.top + safeMargin &&
+        item.left + widthOf(item) <= page.left + coverage.width - safeMargin &&
+        item.top + heightOf(item) <= page.top + coverage.height - safeMargin,
+      );
+      pages.push({ sampleName: group.sampleName, page, elements });
+    }
+  }
+  if (!worksheet) {
+    const appendixPage = { ...printPages[0], left: 0, top: 0, scale: 1 };
+    const pageWidth = appendixPage.orientation === "portrait" ? a4Page.short : a4Page.long;
+    const pageHeight = appendixPage.orientation === "portrait" ? a4Page.long : a4Page.short;
+    for (const target of project.samples) {
+      if (options.statistics) {
+        const stats = data.stats[target.id] ?? [];
+        const fallbackGates = project.gates.filter((gate) => gateAppliesToSample(gate, target.id));
+        const statRows = stats.length ? stats : [{ id: "root", name: "All events", count: 0, percentParent: 100, percentTotal: 100 }, ...fallbackGates.map((gate) => ({ id: gate.id, name: gate.name, count: 0, percentParent: null, percentTotal: null }))];
+        for (let start = 0; start < statRows.length; start += 18) {
+          const rows = statRows.slice(start, start + 18).map((row) => ({
+            label: row.name,
+            values: [fmt(row.count), row.percentParent == null ? "—" : Number(row.percentParent).toFixed(2), row.percentTotal == null ? "—" : Number(row.percentTotal).toFixed(2)],
+          }));
+          const element: PreviewElement = { kind: "detail", id: `${target.id}/stats/${start}`, title: "Population statistics", detail: target.name, left: 32, top: 40, width: pageWidth - 64, height: pageHeight - 80, sampleId: target.id, columns: ["Events", "% parent", "% total"], rows };
+          pages.push({ sampleName: `${target.name} · 集団統計`, page: appendixPage, elements: [element] });
+        }
+      }
+      if (options.compensation) {
+        const channels = target.compensation.channels;
+        const groups = Array.from({ length: Math.ceil(channels.length / 8) }, (_, index) => channels.slice(index * 8, index * 8 + 8));
+        for (let rowGroup = 0; rowGroup < groups.length; rowGroup++) for (let columnGroup = 0; columnGroup < groups.length; columnGroup++) {
+          const rowChannels = groups[rowGroup];
+          const columnChannels = groups[columnGroup];
+          const rows = rowChannels.map((channel, row) => ({
+            label: channel,
+            values: columnChannels.map((_, column) => `${(((target.compensation.values[rowGroup * 8 + row]?.[columnGroup * 8 + column] ?? 0) * 100)).toFixed(2)}%`),
+          }));
+          const element: PreviewElement = { kind: "detail", id: `${target.id}/comp/${rowGroup}/${columnGroup}`, title: "Spillover matrix", detail: `${target.name} · ${target.compensation.enabled ? "APPLIED" : "NOT APPLIED"}`, left: 32, top: 40, width: pageWidth - 64, height: pageHeight - 80, sampleId: target.id, columns: columnChannels, rows };
+          pages.push({ sampleName: `${target.name} · Compensation`, page: appendixPage, elements: [element] });
+        }
+      }
+    }
+  }
+  const appendixPages = worksheet ? 0 : pages.length - samplePages.length * printPages.length;
+  const dialog = document.createElement("dialog");
+  dialog.className = "print-preview-dialog";
+  dialog.setAttribute("aria-label", worksheet ? "ワークシート印刷プレビュー" : "全サンプル印刷プレビュー");
+  dialog.innerHTML = `<div class="print-preview-heading"><div><h2>印刷プレビュー</h2><p class="hint">${worksheet ? esc(sheet().name) : `${project.samples.length}サンプル · ${esc(sheet().name)}`} · 用紙内に入るワークシート項目を表示しています</p></div><button type="button" data-preview-close aria-label="閉じる">×</button></div><div class="print-preview-toolbar"><button type="button" data-preview-prev>← 前</button><strong data-preview-page-count></strong><button type="button" data-preview-next>次 →</button><span class="spacer"></span><span data-preview-orientation></span></div><div class="print-preview-scroll"><div class="print-preview-holder"><div class="print-preview-paper"></div></div></div><p class="print-preview-note">青い枠は用紙に配置される項目の位置確認用です。印刷枠外の項目はPDFに含まれません.${appendixPages ? ` 詳細統計・補償行列を選択しているため、後ろに追加ページが約${appendixPages}ページ続きます。` : ""}</p><div class="axis-dialog-actions"><button type="button" data-preview-cancel>キャンセル</button><button type="button" class="primary" data-preview-save>PDFを保存…</button></div>`;
+  document.body.append(dialog);
+  let resolvePreview!: (result: boolean) => void;
+  const previewResult = new Promise<boolean>((resolve) => { resolvePreview = resolve; });
+  let pageIndex = 0;
+  const paper = dialog.querySelector<HTMLElement>(".print-preview-paper")!;
+  const count = dialog.querySelector<HTMLElement>("[data-preview-page-count]")!;
+  const orientation = dialog.querySelector<HTMLElement>("[data-preview-orientation]")!;
+  const renderPage = () => {
+    const current = pages[pageIndex];
+    const isPortrait = current?.page.orientation === "portrait";
+    const pageWidth = isPortrait ? a4Page.short : a4Page.long;
+    const pageHeight = isPortrait ? a4Page.long : a4Page.short;
+    const coordinateSize = printPageSize(current?.page ?? printPages[0]);
+    const pageScale = current?.page.scale ?? 1;
+    const factor = pageWidth / coordinateSize.width;
+    const zoom = Math.min(0.82, 780 / pageWidth, 650 / pageHeight);
+    count.textContent = `${pageIndex + 1} / ${Math.max(pages.length, 1)} · ${current?.sampleName ?? "サンプルなし"}`;
+    orientation.textContent = `A4 ${isPortrait ? "縦" : "横"} · ${Math.round(pageScale * 100)}%`;
+    const items = (current?.elements ?? []).map((item) => {
+      const left = (item.left - (current?.page.left ?? 0)) * factor;
+      const top = (item.top - (current?.page.top ?? 0)) * factor;
+      const width = widthOf(item) * factor;
+      const height = heightOf(item) * factor;
+      if (item.kind === "statistics") {
+        const rows = (data.stats[item.sampleId] ?? []).slice(0, 5).map((row) => `<div><span>${esc(row.name)}</span><span>${fmt(row.count)}</span></div>`).join("");
+        return `<section class="preview-statistics" style="left:${left}px;top:${top}px;width:${width}px;height:${height}px"><strong>${esc(item.title)} · ${esc(item.detail)}</strong><div class="preview-statistics-rows">${rows || "Events　% Parent　% Total"}</div></section>`;
+      }
+      if (item.kind === "detail") {
+        const head = (item.columns ?? []).map((column) => `<th>${esc(column)}</th>`).join("");
+        const body = (item.rows ?? []).map((row) => `<tr><th>${esc(row.label)}</th>${row.values.map((value) => `<td>${esc(value)}</td>`).join("")}</tr>`).join("");
+        return `<section class="preview-detail" style="left:${left}px;top:${top}px;width:${width}px;height:${height}px"><h3>${esc(item.title)} <small>${esc(item.detail)}</small></h3><table><thead><tr><th>Population / Channel</th>${head}</tr></thead><tbody>${body}</tbody></table></section>`;
+      }
+      const plot = sheet().plots.find((candidate) => candidate.id === item.sourcePlotId);
+      const source = plot && data.plots[plot.id]?.sampleId === item.sampleId
+        ? document.querySelector<HTMLCanvasElement>(`[data-stage="${plot.id}"] canvas`)
+        : null;
+      let image = "";
+      try { if (source && source.width && source.height) image = source.toDataURL("image/png"); } catch { /* Use the axis-only preview when the chart is not rasterized yet. */ }
+      return `<section class="preview-plot" style="left:${left}px;top:${top}px;width:${width}px;height:${height}px"><strong>${esc(item.title)}</strong><small>${esc(item.detail)}</small>${image ? `<img alt="" src="${image}">` : '<div class="preview-plot-area"><span></span></div>'}</section>`;
+    }).join("");
+    paper.style.width = `${pageWidth}px`;
+    paper.style.height = `${pageHeight}px`;
+    paper.style.transform = `scale(${zoom})`;
+    paper.parentElement!.setAttribute("style", `width:${pageWidth * zoom}px;height:${pageHeight * zoom}px`);
+    paper.innerHTML = items || '<div class="preview-empty">この印刷枠に入るプロット・統計ウィジェットはありません</div>';
+  };
+  const finish = (result: boolean) => { if (dialog.open) dialog.close(); dialog.remove(); resolvePreview(result); };
+  dialog.querySelector<HTMLButtonElement>("[data-preview-close]")!.onclick = () => finish(false);
+  dialog.querySelector<HTMLButtonElement>("[data-preview-cancel]")!.onclick = () => finish(false);
+  dialog.querySelector<HTMLButtonElement>("[data-preview-prev]")!.onclick = () => { pageIndex = Math.max(0, pageIndex - 1); renderPage(); };
+  dialog.querySelector<HTMLButtonElement>("[data-preview-next]")!.onclick = () => { pageIndex = Math.min(pages.length - 1, pageIndex + 1); renderPage(); };
+  dialog.querySelector<HTMLButtonElement>("[data-preview-save]")!.onclick = () => finish(true);
+  dialog.addEventListener("cancel", (event) => { event.preventDefault(); finish(false); });
+  renderPage();
+  dialog.showModal();
+  return previewResult;
 }
 async function loadProject() {
   if (
@@ -3426,6 +3715,7 @@ async function exportPdf(worksheet: boolean) {
     ? { plots: true, statistics: false, compensation: false }
     : await reportOptionsDialog();
   if (!options) return;
+  if (!(await printPreviewDialog(worksheet, options))) return;
   const path = await save({
     defaultPath: `${project.name}-${worksheet ? sheet().name : "report"}.pdf`,
     filters: [{ name: "PDF", extensions: ["pdf"] }],
@@ -3438,14 +3728,14 @@ async function exportPdf(worksheet: boolean) {
       sampleId,
       plots: structuredClone(sheet().plots),
       widgets: structuredClone((sheet().widgets ?? []).filter(isStatisticsWidget)),
-      printPages: worksheet ? structuredClone(sheet().printPages ?? []) : undefined,
+      printPages: structuredClone(sheet().printPages ?? []),
       includeWidgets: true,
       worksheetName: sheet().name,
       includePlots: options.plots,
       includeStatistics: options.statistics,
       includeCompensation: options.compensation,
     });
-    message(`PDFを保存しました: ${path}${worksheet && result.outside ? ` · 印刷枠外の${result.outside}項目は含まれていません` : ""}`);
+    message(`PDFを保存しました: ${path}${result.pages ? ` · ${result.pages}ページ` : ""}${result.outside ? ` · 印刷枠外の${result.outside}項目は含まれていません` : ""}`);
   });
 }
 

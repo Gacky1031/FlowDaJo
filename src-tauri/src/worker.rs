@@ -163,7 +163,7 @@ pub fn call(script: PathBuf, storage: PathBuf, mut payload: Value) -> Result<Val
             .into());
     }
     let mut data = result["data"].clone();
-    if payload["action"] == "worksheet_pdf" {
+    if payload["action"] == "worksheet_pdf" || payload["action"] == "worksheet_report_pdf" {
         if let Some(page_files) = data["pageFiles"].as_array() {
             let files: Vec<PathBuf> = page_files
                 .iter()

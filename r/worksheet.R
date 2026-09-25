@@ -471,9 +471,11 @@ draw_statistics_widget <- function(widget, statistics, sample_name, gates=list()
 draw_statistics_pages <- function(req) {
   include_stats <- isTRUE(req$includeStatistics)
   include_comp <- isTRUE(req$includeCompensation)
+  page_count <- 0L
   for(s in req$project$samples) {
     entry<-session_analysis(req$project,s,req$storage); statistics<-entry$stats
     if(include_stats) for(chunk in split(statistics,ceiling(seq_along(statistics)/18))) {
+      page_count <- page_count + 1L
       par(mfrow=c(1,1),mar=c(3,3,4,3));plot.new();plot.window(xlim=c(0,1),ylim=c(0,1));title(paste("Population statistics |",s$name))
       text(.02,.95,"Population",adj=0,font=2,cex=.8)
       text(c(.61,.79,.98),rep(.95,3),c("Events","% parent","% total"),adj=1,font=2,cex=.8)
@@ -489,12 +491,14 @@ draw_statistics_pages <- function(req) {
     if(include_comp) {
       config<-s$compensation; channels<-unlist(config$channels); values<-matrix_from(config$values)*100
       for(rg in split(seq_along(channels),ceiling(seq_along(channels)/8))) for(cg in split(seq_along(channels),ceiling(seq_along(channels)/8))) {
+        page_count <- page_count + 1L
         par(mfrow=c(1,1),mar=c(3,3,4,3));plot.new();plot.window(xlim=c(0,1),ylim=c(0,1));title(paste("Spillover (%) |",s$name,"|",if(config$enabled)"APPLIED"else"NOT APPLIED"))
         xs<-seq(.25,.95,length.out=length(cg));ys<-seq(.80,.20,length.out=length(rg));text(xs,.88,channels[cg],cex=.7)
         for(i in seq_along(rg)){text(.02,ys[i],channels[rg[i]],adj=0,cex=.8);text(xs,ys[i],sprintf("%.2f",values[rg[i],cg]),cex=.8)}
       }
     }
   }
+  page_count
 }
 
 # A worksheet PDF uses the same A4 rectangles shown on the canvas. Cairo's
@@ -507,9 +511,14 @@ export_print_pages <- function(req,data,cards,widgets) {
                 lapply(widgets,function(value)list(kind="statistics",value=value)))
   width_of <- function(item) item$value$width %||% if(identical(item$kind,"statistics"))640 else 344
   height_of <- function(item) item$value$height %||% if(identical(item$kind,"statistics"))340 else 314
-  files <- character(); success <- FALSE; printed <- character()
+  files <- character(); success <- FALSE; printed <- character(); page_count <- 0L
   on.exit(if(!success && length(files))unlink(files),add=TRUE)
-  for(page in pages) {
+  report <- isTRUE(req$reportBySample)
+  sample_groups <- if(report) lapply(req$project$samples,function(s)
+    Filter(function(item)identical(item$value$reportSampleId,s$id),elements)) else list(elements)
+  if(report && !length(sample_groups)) fail("No samples are available for the report")
+  for(sample_index in seq_along(sample_groups)) for(page in pages) {
+    page_elements <- sample_groups[[sample_index]]
     portrait <- identical(page$orientation,"portrait")
     scale <- page$scale %||% 1
     width <- (if(portrait)794 else 1123)*scale
@@ -521,11 +530,12 @@ export_print_pages <- function(req,data,cards,widgets) {
       (box$left %||% 0) >= left+safe_margin && (box$top %||% 0) >= top+safe_margin &&
         (box$left %||% 0)+width_of(item) <= left+width-safe_margin &&
         (box$top %||% 0)+height_of(item) <= top+height-safe_margin
-    },elements)
+    },page_elements)
     page_items <- page_items[order(vapply(page_items,function(item)item$value$top %||% 0,0),
       vapply(page_items,function(item)item$value$left %||% 0,0))]
     file <- tempfile(pattern="flowdesk-page-",tmpdir=dirname(req$path),fileext=".pdf")
     files <- c(files,file)
+    page_count <- page_count + 1L
     grDevices::cairo_pdf(file,width=if(portrait)210/25.4 else 297/25.4,
       height=if(portrait)297/25.4 else 210/25.4,onefile=TRUE,
       family=if(.Platform$OS.type=="windows")"Yu Gothic" else "sans")
@@ -556,8 +566,27 @@ export_print_pages <- function(req,data,cards,widgets) {
       }
     },finally=dev.off())
   }
+  # Optional detail tables are additional report pages. Keep them in a
+  # separate PDF so the worksheet pages above can preserve mixed A4 sizes.
+  if(report && (isTRUE(req$includeStatistics) || isTRUE(req$includeCompensation))) {
+    appendix <- tempfile(pattern="flowdesk-report-details-",tmpdir=dirname(req$path),fileext=".pdf")
+    files <- c(files,appendix)
+    first_page <- pages[[1]]
+    appendix_portrait <- identical(first_page$orientation,"portrait")
+    grDevices::cairo_pdf(appendix,
+      width=if(appendix_portrait)210/25.4 else 297/25.4,
+      height=if(appendix_portrait)297/25.4 else 210/25.4,
+      onefile=TRUE,family=if(.Platform$OS.type=="windows")"Yu Gothic" else "sans")
+    appendix_count <- tryCatch(draw_statistics_pages(req),finally=dev.off())
+    if(appendix_count > 0L) {
+      page_count <- page_count + appendix_count
+    } else {
+      unlink(appendix)
+      files <- setdiff(files,appendix)
+    }
+  }
   success <- TRUE
-  list(path=req$path,pageFiles=as.list(files),pages=length(files),
+  list(path=req$path,pageFiles=as.list(files),pages=page_count,
        plots=sum(vapply(cards,function(card)card$id %in% printed,FALSE)),
        outside=sum(!vapply(elements,function(item)item$value$id %in% printed,FALSE)))
 }
@@ -572,7 +601,7 @@ export_vector <- function(req,kind=c("pdf","svg"),single=FALSE) {
   widgets<-if(include_widgets) req$widgets %||% list() else list()
   if(include_plots && !length(cards) && !length(widgets)) fail("Worksheet is empty")
   if(!include_plots && kind!="pdf") fail("SVG output requires plots")
-  if(kind=="pdf" && !single && !isTRUE(req$reportBySample))
+  if(kind=="pdf" && !single)
     return(export_print_pages(req,data,if(include_plots)cards else list(),widgets))
   tmp<-tempfile(tmpdir=dirname(req$path),fileext=paste0(".",kind)); closed<-FALSE
   page_w <- if(kind=="pdf" && !single) 11.69 else 7
@@ -636,18 +665,30 @@ dispatch <- function(req) {
     if(!length(req$project$samples))fail("No samples are available for the report")
     sample_ids<-vapply(req$project$samples,function(s)s$id,"")
     if(is.null(req$sampleId)||!req$sampleId%in%sample_ids)req$sampleId<-sample_ids[1]
+    report_population <- function(path,sample_id) {
+      applicable<-Filter(function(g)gate_applies_to_sample(g,sample_id),req$project$gates %||% list())
+      path<-path %||% list()
+      while(length(path)) {
+        valid<-tryCatch({resolve_population(applicable,path);TRUE},error=function(e)FALSE)
+        if(valid)break
+        path<-path[-length(path)]
+      }
+      path
+    }
     for(s in req$project$samples) for(template in templates) {
       card<-template
       if(is.null(card$sampleId)||identical(card$sampleId,"active")) {
         card$id<-paste0(s$id,"/",card$id)
         card$sampleId<-s$id
         card$reportSampleId<-s$id
+        card$population<-report_population(card$population,s$id)
         cards[[length(cards)+1]]<-card
       }
     }
     for(template in templates) if(!is.null(template$sampleId)&&!identical(template$sampleId,"active")) {
       card<-template
       card$reportSampleId<-card$sampleId
+      card$population<-report_population(card$population,card$sampleId)
       cards[[length(cards)+1]]<-card
     }
     for(s in req$project$samples) for(template in widget_templates) {
