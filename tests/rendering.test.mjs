@@ -88,7 +88,9 @@ test("v0.4 scientific rendering payload, gates, modes, and vector/statistics exp
 
     const allModesPdf = join(storage, "all-modes.pdf"), report = join(storage, "report.pdf");
     await w.call({ action: "worksheet_pdf", project, sampleId: sample.id, plots, path: allModesPdf });
-    await w.call({ action: "worksheet_report_pdf", project, sampleId: sample.id, plots, path: report });
-    assert.ok(statSync(allModesPdf).size > 5000); assert.ok(statSync(report).size > statSync(allModesPdf).size);
+    const reportResult = await w.call({ action: "worksheet_report_pdf", project, sampleId: sample.id, plots, path: report,
+      includeStatistics: true, includeCompensation: true });
+    assert.equal(reportResult.pages, 1, "legacy appendix flags do not add report pages");
+    assert.ok(statSync(allModesPdf).size > 5000); assert.ok(statSync(report).size > 1000);
   } finally { w.close(); }
 });

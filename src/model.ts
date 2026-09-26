@@ -278,6 +278,19 @@ export function newStatisticsWidget(
     mfiChannels: [],
   };
 }
+export function ensureDivaWorksheetDefaults(worksheet: Worksheet): Worksheet {
+  if (!worksheet.printPages?.length) {
+    worksheet.printPages = [{ id: uid(), left: 0, top: 0, orientation: "landscape" }];
+  }
+  if (!(worksheet.widgets ?? []).some((widget) => widget.type !== "compensation")) {
+    worksheet.widgets ??= [];
+    const sampleId = worksheet.mode === "normal"
+      ? worksheet.plots.find((plot) => plot.sampleId !== "active")?.sampleId ?? "active"
+      : "active";
+    worksheet.widgets.push(newStatisticsWidget(worksheet.plots, sampleId));
+  }
+  return worksheet;
+}
 export function newCompensationWidget(
   plots: WorksheetPlot[] = [],
   widgets: { left: number; top: number; width: number; height: number }[] = [],

@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { statSync } from "node:fs";
+import { clickDemo, clickToolbarAction } from "./helpers";
 async function changeX(page: Page, name: string) {
   await page.locator('[data-axis-label="x"]').last().click();
   await page.getByRole("combobox", { name: "チャンネルを検索" }).fill(name);
@@ -12,7 +13,7 @@ test("global worksheet: free plots, editing, responsive jobs, axes, comparison a
   page.on("pageerror", (e) => failures.push(e.message));
   await page.goto("/");
   await expect(page.locator(".status")).toContainText("起動完了");
-  await page.getByRole("button", { name: "デモ", exact: true }).click();
+  await clickDemo(page);
   await expect(page.locator(".statistics")).toContainText("16,000");
   for (let i = 0; i < 5; i++) await page.locator("#add-plot").click();
   await expect(page.locator(".plot-card")).toHaveCount(6);
@@ -86,7 +87,7 @@ test("global worksheet: free plots, editing, responsive jobs, axes, comparison a
   await expect(page.locator("[data-binding]")).toHaveCount(0);
   await expect(page.locator(".global-plot-sample")).toHaveCount(7);
   await expect(page.locator(".global-plot-sample").first()).toContainText("Demo · 3 populations");
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".sample")).toHaveCount(2);
   await expect(page.locator(".status")).not.toHaveClass(/pending/);
   await expect(page.locator(".global-plot-sample").first()).toContainText("Demo 2");
@@ -101,7 +102,7 @@ test("global worksheet: free plots, editing, responsive jobs, axes, comparison a
   await page.locator("#new-sheet").click();
   await page.locator("#add-plot").click();
   await expect(page.locator(".plot-card")).toHaveCount(1);
-  await page.locator("#load").click();
+  await clickToolbarAction(page, "#load");
   await expect(page.locator(".plot-card")).toHaveCount(7);
   await expect(page.locator("[data-mode]").last()).toHaveValue("histogram");
   await expect(page.locator('[data-axis-label="x"]').last()).toContainText(
@@ -124,7 +125,7 @@ test("polygon vertices, grouped quadrants, layout drag/resize and batch gates", 
   page.on("pageerror", (e) => failures.push(e.message));
   await page.goto("/");
   await expect(page.locator(".status")).toContainText("起動完了");
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".statistics")).toContainText("16,000");
   const stage = page.locator(".plot-stage").first(),
     box = (await stage.boundingBox())!;
@@ -185,7 +186,7 @@ test("polygon vertices, grouped quadrants, layout drag/resize and batch gates", 
   await page.mouse.move(resize.x + 43, resize.y + 33, { steps: 6 });
   await page.mouse.up();
   expect((await c.boundingBox())!.width).toBeGreaterThan(old.width + 25);
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".sample")).toHaveCount(2);
   await page.locator(".sample").first().click();
   await page.locator("#batch").click();
@@ -199,9 +200,9 @@ test("polygon vertices, grouped quadrants, layout drag/resize and batch gates", 
 
 test("normal worksheet expands one plot from its context menu", async ({ page }) => {
   await page.goto("/");
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".statistics")).toContainText("16,000");
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".sample")).toHaveCount(2);
   await page.getByRole("button", { name: "Normal", exact: true }).click();
   await expect(page.locator('[data-sheet-mode="normal"]')).toHaveClass(/active/);
@@ -216,18 +217,18 @@ test("normal worksheet expands one plot from its context menu", async ({ page })
 
 test("normal worksheet expands multiple selected plots to every chosen sample", async ({ page }) => {
   await page.goto("/");
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".statistics")).toContainText("16,000");
   await page.locator("#add-plot").click();
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".sample")).toHaveCount(2);
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".sample")).toHaveCount(3);
   await page.getByRole("button", { name: "Normal", exact: true }).click();
   await expect(page.locator('[data-sheet-mode="normal"]')).toHaveClass(/active/);
   await page.locator("[data-select-card]").nth(0).check();
   await page.locator("[data-select-card]").nth(1).check();
-  await expect(page.locator("#selection-info")).toHaveText("選択: 2");
+  await expect(page.locator("#selection-info")).toContainText("選択: 2プロット");
   await page.locator(".worksheet-actions-menu > summary").click();
   await page.locator("#batch-plots-sheet").click();
   await expect(page.getByRole("dialog")).toBeVisible();
@@ -249,7 +250,7 @@ test("normal worksheet expands multiple selected plots to every chosen sample", 
 
 test("sidebar population drag drop and custom grid arrangement", async ({ page }) => {
   await page.goto("/");
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".statistics")).toContainText("16,000");
   const root = page.locator('.population[data-pop="root"]');
   await expect(root).toBeVisible();
@@ -262,7 +263,7 @@ test("sidebar population drag drop and custom grid arrangement", async ({ page }
     droppedPlot.y >= statisticsWidget.y + statisticsWidget.height ||
     droppedPlot.y + droppedPlot.height <= statisticsWidget.y;
   expect(clearOfStatistics).toBe(true);
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".sample")).toHaveCount(2);
   await page.getByRole("button", { name: "Normal", exact: true }).click();
   await page.locator("[data-select-card]").nth(0).check();
@@ -281,7 +282,7 @@ test("sidebar population drag drop and custom grid arrangement", async ({ page }
 
 test("bulk plot settings combine axes and displayed populations", async ({ page }) => {
   await page.goto("/");
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".statistics")).toContainText("16,000");
   await page.locator("#add-plot").click();
   await page.locator("[data-select-card]").nth(0).check();
@@ -302,7 +303,7 @@ test("bulk plot settings combine axes and displayed populations", async ({ page 
 
 test("selected plots change their actual population across different axes", async ({ page }) => {
   await page.goto("/");
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".statistics tbody")).toContainText("16,000");
   const stage = page.locator(".plot-stage").first();
   const box = (await stage.boundingBox())!;
@@ -343,7 +344,7 @@ test("selected plots change their actual population across different axes", asyn
 
 test("gate outlines can be assigned across plots with different axes", async ({ page }) => {
   await page.goto("/");
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".statistics")).toContainText("16,000");
   await expect(page.locator(".status")).not.toHaveClass(/pending/);
   const stage = page.locator(".plot-stage").first();
@@ -374,7 +375,7 @@ test("gate outlines can be assigned across plots with different axes", async ({ 
 
 test("gate outlines can be changed from a gate right-click menu", async ({ page }) => {
   await page.goto("/");
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".statistics tbody")).toContainText("16,000");
   await expect(page.locator(".status")).not.toHaveClass(/pending/);
   const stage = page.locator(".plot-stage").first();
@@ -419,7 +420,7 @@ test("gate outlines can be changed from a gate right-click menu", async ({ page 
 
 test("gate outline switch works on a plot showing the gated population", async ({ page }) => {
   await page.goto("/");
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".statistics tbody")).toContainText("16,000");
   const stage = page.locator(".plot-stage").first();
   const box = (await stage.boundingBox())!;
@@ -449,7 +450,7 @@ test("gate outline switch works on a plot showing the gated population", async (
 
 test("statistics widget defaults to all populations and allows a hidden population", async ({ page }) => {
   await page.goto("/");
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".statistics tbody tr")).toHaveCount(1);
   const stage = page.locator(".plot-stage").first();
   const box = (await stage.boundingBox())!;
@@ -489,7 +490,7 @@ test("sample order supports name, import and drag ordering plus arrow navigation
   });
   await page.goto("/");
   for (let i = 0; i < 3; i++) {
-    await page.locator("#demo").click();
+    await clickDemo(page);
     await expect(page.locator("button.sample")).toHaveCount(i + 1);
   }
   await expect(page.locator("button.sample")).toHaveCount(3);
@@ -511,17 +512,18 @@ test("sample order supports name, import and drag ordering plus arrow navigation
   await page.locator("#save").click();
   await expect(page.locator(".status")).toContainText("保存しました");
   await page.getByRole("combobox", { name: "サンプルの並び順" }).selectOption("name");
-  await page.locator("#load").click();
+  await clickToolbarAction(page, "#load");
   await expect.poll(order).toEqual(["order-3", "order-1", "order-2"]);
   await expect(page.getByRole("combobox", { name: "サンプルの並び順" })).toHaveValue("manual");
 });
 
 test("A4 worksheet frames can move, rotate and produce multiple PDF pages", async ({ page }) => {
   await page.goto("/");
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".statistics tbody")).toContainText("16,000", { timeout: 45_000 });
   const first = page.locator(".print-page").first();
   await expect(first).toHaveCSS("width", "1123px");
+  await page.locator("#toggle-print-layout").click();
   const handle = (await first.locator("[data-print-move]").boundingBox())!;
   await page.mouse.move(handle.x + 35, handle.y + 10);
   await page.mouse.down();
@@ -534,32 +536,37 @@ test("A4 worksheet frames can move, rotate and produce multiple PDF pages", asyn
   await page.locator("[data-print-orientation]").last().click();
   await expect(page.locator(".print-page").last()).toHaveCSS("width", "794px");
   await expect(page.locator(".print-page").last()).toHaveCSS("height", "1123px");
-  const corner = first.locator("[data-print-turn]");
+  const corner = first.locator("[data-print-resize]");
   await corner.scrollIntoViewIfNeeded();
   const cornerBox = (await corner.boundingBox())!;
   await page.mouse.move(cornerBox.x + cornerBox.width / 2, cornerBox.y + cornerBox.height / 2);
   await page.mouse.down();
   await page.mouse.move(cornerBox.x - 390, cornerBox.y + cornerBox.height / 2, { steps: 6 });
   await page.mouse.up();
-  await expect(first).toHaveCSS("width", "794px");
+  const resizedWidth = Number.parseFloat(await first.evaluate((element) => getComputedStyle(element).width));
+  expect(resizedWidth).toBeGreaterThan(0);
+  expect(resizedWidth).toBeLessThan(1123);
   await page.locator("[data-print-orientation]").last().click();
   await expect(page.locator(".print-page").last()).toHaveCSS("width", "1123px");
   await page.locator("#save").click();
   await expect(page.locator(".status")).toContainText("保存しました");
-  await page.locator("#load").click();
+  await clickToolbarAction(page, "#load");
   await expect(page.locator(".print-page")).toHaveCount(2);
   await expect(page.locator(".print-page").first()).toHaveCSS("left", "8px");
-  await expect(page.locator(".print-page").first()).toHaveCSS("width", "794px");
+  const restoredWidth = Number.parseFloat(await first.evaluate((element) => getComputedStyle(element).width));
+  expect(restoredWidth).toBeCloseTo(resizedWidth, 1);
   await expect(page.locator(".print-page").last()).toHaveCSS("width", "1123px");
   await expect(page.locator(".status")).toContainText("更新完了", { timeout: 30_000 });
-  await page.locator("#pdf").click();
+  await clickToolbarAction(page, "#pdf");
+  const preview = page.getByRole("dialog", { name: "ワークシート印刷プレビュー" });
+  await preview.getByRole("button", { name: "PDFを保存…" }).click();
   await expect(page.locator(".status")).toContainText("PDFを保存しました");
   expect(statSync("artifacts/ui-worksheet.pdf").size).toBeGreaterThan(1000);
 });
 
 test("plot context menu changes one plot or the selected group directly", async ({ page }) => {
   await page.goto("/");
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".statistics")).toContainText("16,000");
   await page.locator("#add-plot").click();
   await page.locator("#add-plot").click();
@@ -595,7 +602,7 @@ test("plot context menu changes one plot or the selected group directly", async 
 
 test("worksheet tab context menu deletes the last sheet and creates a blank one", async ({ page }) => {
   await page.goto("/");
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".plot-card")).toHaveCount(1);
   await page.locator("[data-sheet]").click({ button: "right" });
   await page.getByRole("menuitem", { name: "このワークシートを削除…" }).click();
@@ -607,10 +614,10 @@ test("worksheet tab context menu deletes the last sheet and creates a blank one"
 
 test("compensation worksheet widget applies its edited matrix only to checked samples", async ({ page }) => {
   await page.goto("/");
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".statistics")).toContainText("16,000");
   await expect(page.locator(".status")).not.toHaveClass(/pending/);
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".sample")).toHaveCount(2);
   await expect(page.locator(".status")).not.toHaveClass(/pending/);
   await page.locator(".widget-add-menu > summary").click();
@@ -635,7 +642,7 @@ test("compensation worksheet widget applies its edited matrix only to checked sa
 
 test("compensation widget lets users toggle the displayed matrix channels", async ({ page }) => {
   await page.goto("/");
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".statistics")).toContainText("16,000");
   await page.locator(".widget-add-menu > summary").click();
   await page.locator("#compensation-widget-add").click();
@@ -654,7 +661,7 @@ test("compensation widget lets users toggle the displayed matrix channels", asyn
 
 test("compensation preset adds a widget showing only the selected Y-axis channels", async ({ page }) => {
   await page.goto("/");
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".statistics")).toContainText("16,000");
   await page.locator(".worksheet-actions-menu > summary").click();
   await page.locator("#compensation-expansion").click();
@@ -675,7 +682,7 @@ test("compensation preset adds a widget showing only the selected Y-axis channel
 
 test("normal to global asks before changing sample bindings", async ({ page }) => {
   await page.goto("/");
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await page.getByRole("button", { name: "Normal", exact: true }).click();
   await page.evaluate(() => { (window as Window & { __FLOWDESK_TEST_CONFIRM__?: boolean }).__FLOWDESK_TEST_CONFIRM__ = false; });
   await page.locator('[data-sheet-mode="global"]').click();
@@ -687,9 +694,9 @@ test("normal to global asks before changing sample bindings", async ({ page }) =
 
 test("normal statistics widget switches samples and expands to other samples", async ({ page }) => {
   await page.goto("/");
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".statistics tbody tr")).not.toHaveCount(0);
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".sample")).toHaveCount(2);
   await page.getByRole("button", { name: "Normal", exact: true }).click();
   const widget = page.locator(".statistics-widget");
@@ -723,7 +730,7 @@ test("normal statistics widget switches samples and expands to other samples", a
 test("normal sheet expands selected plots and both widget types in either direction", async ({ page }) => {
   await page.goto("/");
   for (let count = 1; count <= 3; count++) {
-    await page.locator("#demo").click();
+    await clickDemo(page);
     await expect(page.locator("button.sample")).toHaveCount(count);
   }
   const sampleIds = await page.locator("button.sample").evaluateAll((buttons) =>
@@ -742,7 +749,7 @@ test("normal sheet expands selected plots and both widget types in either direct
   await page.locator("[data-select-card]").first().check();
   await page.locator(".statistics-widget [data-select-widget]").check();
   await page.locator(".compensation-widget [data-select-widget]").check();
-  await expect(page.locator("#selection-info")).toHaveText("選択: 3");
+  await expect(page.locator("#selection-info")).toHaveText("選択: 1プロット + 2ウィジェット");
   await page.locator(".worksheet-actions-menu > summary").click();
   await page.locator("#batch-plots-sheet").click();
   let dialog = page.getByRole("dialog", { name: "Normal sheetの選択項目を他サンプルへ展開" });
@@ -780,7 +787,7 @@ test("normal sheet expands selected plots and both widget types in either direct
 
 test("worksheet statistics widget, plot visibility settings and axis preview", async ({ page }) => {
   await page.goto("/");
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".board > .statistics-widget")).toBeVisible();
   await expect(page.locator(".statistics th")).toHaveCount(4);
   await page.locator('[data-plot-options]').first().click();
@@ -807,4 +814,44 @@ test("worksheet statistics widget, plot visibility settings and axis preview", a
   await page.getByRole("dialog", { name: "集団名を変更" }).locator('[name="name"]').fill("T cells");
   await page.getByRole("dialog", { name: "集団名を変更" }).getByRole("button", { name: "名前を変更", exact: true }).click();
   await expect(page.locator(".statistics .population-cell").last()).toContainText("T cells");
+});
+
+test("toolbar dropdowns hide until opened and their items remain clickable", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator(".status")).toContainText("起動完了");
+  const fileMenu = page.locator('.toolbar-menu:has(#demo)');
+  const fileItems = fileMenu.locator(":scope > div");
+  await expect(fileItems).toBeHidden();
+  await fileMenu.locator("summary").click();
+  await expect(fileItems).toBeVisible();
+  await page.locator("#demo").click();
+  await expect(fileMenu).not.toHaveAttribute("open", "");
+  await expect(page.locator(".statistics")).toContainText("16,000");
+
+  const outputMenu = page.locator('.toolbar-menu:has(#csv)');
+  const outputItems = outputMenu.locator(":scope > div");
+  await expect(outputItems).toBeHidden();
+  await outputMenu.locator("summary").click();
+  await expect(outputItems).toBeVisible();
+  await page.locator("#csv").click();
+  await expect(page.locator(".status")).toContainText("統計CSVを保存しました", { timeout: 30_000 });
+  await expect(outputMenu).not.toHaveAttribute("open", "");
+});
+
+test("deleting a selected plot removes every selected plot", async ({ page }) => {
+  await page.goto("/");
+  await clickDemo(page);
+  await expect(page.locator(".statistics")).toContainText("16,000");
+  await page.locator("#add-plot").click();
+  await page.locator("#add-plot").click();
+  await expect(page.locator(".plot-card")).toHaveCount(3);
+  const originalIds = await page.locator(".plot-card").evaluateAll((cards) =>
+    cards.map((card) => (card as HTMLElement).dataset.card),
+  );
+  await page.locator("[data-select-card]").nth(0).check();
+  await page.locator("[data-select-card]").nth(1).check();
+  await expect(page.locator("#selection-info")).toContainText("2プロット");
+  await page.locator(`[data-card="${originalIds[0]}"] [data-remove]`).click();
+  await expect(page.locator(".plot-card")).toHaveCount(1);
+  await expect(page.locator(".plot-card")).toHaveAttribute("data-card", originalIds[2]!);
 });

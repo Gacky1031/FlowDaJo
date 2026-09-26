@@ -29,6 +29,7 @@ import {
   resolveGate,
   newPlot,
   migrate,
+  ensureDivaWorksheetDefaults,
   deleteBranch,
   oneDimensional,
   plotModes,
@@ -1773,11 +1774,18 @@ function duplicatePlot(source: WorksheetPlot) {
   changed();
 }
 function removePlot(c: WorksheetPlot) {
+  const currentPlots = sheet().plots;
+  if (!currentPlots.some((plot) => plot.id === c.id)) return;
+  const selected = currentPlots.filter((plot) => selectedCards.has(plot.id));
+  const removed = selectedCards.has(c.id) && selected.length > 1 ? selected : [c];
+  const removedIds = new Set(removed.map((plot) => plot.id));
   remember();
-  selectedCards.delete(c.id);
-  sheet().plots = sheet().plots.filter((p) => p.id !== c.id);
-  if (activeCard === c.id) activeCard = sheet().plots[0]?.id ?? "";
+  for (const id of removedIds) selectedCards.delete(id);
+  sheet().plots = currentPlots.filter((plot) => !removedIds.has(plot.id));
+  if (removedIds.has(activeCard)) activeCard = sheet().plots[0]?.id ?? "";
+  if (removedIds.has(focusedCard)) focusedCard = "";
   changed();
+  if (removed.length > 1) message(`選択した${removed.length}個のプロットを削除しました。`);
 }
 function renameGate(g: Gate, input: string): boolean {
   const name = input.trim();
@@ -3722,7 +3730,7 @@ async function importData(source: "fcs" | "folder" | "diva") {
     for (const importedSheet of r.divaWorksheets ?? []) {
       const existing = project.worksheets!.find((item) => item.id === importedSheet.id);
       if (!existing) {
-        freshWorksheets.push(importedSheet);
+        freshWorksheets.push(ensureDivaWorksheetDefaults(importedSheet));
         continue;
       }
       if (existing.divaSourceId && existing.divaSourceId === importedSheet.divaSourceId) {
@@ -3733,6 +3741,7 @@ async function importData(source: "fcs" | "folder" | "diva") {
           plot.x = structuredClone(importedPlot.x);
           plot.y = structuredClone(importedPlot.y);
         }
+        ensureDivaWorksheetDefaults(existing);
         refreshedWorksheets++;
       }
     }    if (
@@ -3868,17 +3877,13 @@ async function applyTemplateFromFile() {
   });
   dialog.showModal();
 }
-function reportOptionsDialog(): Promise<{
-  plots: boolean;
-  statistics: boolean;
-  compensation: boolean;
-} | null> {
+function reportOptionsDialog(): Promise<{ plots: boolean } | null> {
   const dialog = document.createElement("dialog");
   dialog.setAttribute("aria-label", "全サンプルPDFの出力内容");
-  dialog.innerHTML = `<form><h2>全サンプルPDFの出力内容</h2><p class="hint">ワークシートのA4印刷枠を各サンプルに適用します。配置済みの統計・補償ウィジェットは各サンプルページへ印刷し、チェック項目で詳細付録を追加します。</p><label class="check"><input name="plots" type="checkbox" checked> プロット</label><label class="check"><input name="statistics" type="checkbox" checked> 詳細な集団統計ページ</label><label class="check"><input name="compensation" type="checkbox" checked> Compensation / spillover 行列</label><div class="axis-dialog-actions"><button type="button" data-cancel>キャンセル</button><button class="primary" type="submit">印刷プレビューへ</button></div></form>`;
+  dialog.innerHTML = `<form><h2>全サンプルPDFの出力内容</h2><p class="hint">ワークシートのA4印刷枠を各サンプルに適用します。統計・補償ウィジェットは、ワークシートに配置した場合のみ印刷されます。</p><label class="check"><input name="plots" type="checkbox" checked> プロット</label><div class="axis-dialog-actions"><button type="button" data-cancel>キャンセル</button><button class="primary" type="submit">印刷プレビューへ</button></div></form>`;
   document.body.append(dialog);
   return new Promise((resolve) => {
-    const close = (value: { plots: boolean; statistics: boolean; compensation: boolean } | null) => {
+    const close = (value: { plots: boolean } | null) => {
       dialog.close();
       dialog.remove();
       resolve(value);
@@ -3892,18 +3897,12 @@ function reportOptionsDialog(): Promise<{
       event.preventDefault();
       const checked = (name: string) =>
         dialog.querySelector<HTMLInputElement>(`[name="${name}"]`)!.checked;
-      const value = {
-        plots: checked("plots"),
-        statistics: checked("statistics"),
-        compensation: checked("compensation"),
-      };
-      if (!value.plots && !value.statistics && !value.compensation) return;
-      close(value);
+      close({ plots: checked("plots") });
     });
     dialog.showModal();
   });
 }
-type PdfOptions = { plots: boolean; statistics: boolean; compensation: boolean };
+type PdfOptions = { plots: boolean };
 type PreparedPdf = { previewId: string; path: string; result: { outside?: number; pages?: number; missingPopulations?: { sample: string; population: string }[] } };
 function exactPdfPreviewDialog(prepared: PreparedPdf, worksheet: boolean): Promise<boolean> {
   const dialog = document.createElement("dialog");
@@ -3929,7 +3928,7 @@ function exactPdfPreviewDialog(prepared: PreparedPdf, worksheet: boolean): Promi
   });
 }
 type PreviewElement = {
-  kind: "plot" | "statistics" | "compensation" | "detail";
+  kind: "plot" | "statistics" | "compensation";
   id: string;
   title: string;
   detail: string;
@@ -3941,8 +3940,6 @@ type PreviewElement = {
   sourcePlotId?: string;
   sourceWidgetId?: string;
   missingPopulationPath?: string;
-  columns?: string[];
-  rows?: { label: string; values: string[] }[];
 };
 function printPreviewDialog(worksheet: boolean, options: PdfOptions): Promise<boolean> {
   const printPages = sheet().printPages?.length
@@ -4008,45 +4005,11 @@ function printPreviewDialog(worksheet: boolean, options: PdfOptions): Promise<bo
       pages.push({ sampleName: group.sampleName, page, elements });
     }
   }
-  if (!worksheet) {
-    const appendixPage = { ...printPages[0], left: 0, top: 0, scale: 1 };
-    const pageWidth = appendixPage.orientation === "portrait" ? a4Page.short : a4Page.long;
-    const pageHeight = appendixPage.orientation === "portrait" ? a4Page.long : a4Page.short;
-    for (const target of project.samples) {
-      if (options.statistics) {
-        const stats = data.stats[target.id];
-        const statRows = stats?.length ? stats : stats ? [] : [{ id: "preview-pending", name: "この集計値はPDF生成時にRで再計算されます", count: null, percentParent: null, percentTotal: null }];
-        for (let start = 0; start < statRows.length; start += 18) {
-          const rows = statRows.slice(start, start + 18).map((row) => ({
-            label: row.name,
-            values: [row.count == null ? "—" : fmt(row.count), row.percentParent == null ? "—" : Number(row.percentParent).toFixed(2), row.percentTotal == null ? "—" : Number(row.percentTotal).toFixed(2)],
-          }));
-          const element: PreviewElement = { kind: "detail", id: `${target.id}/stats/${start}`, title: "Population statistics", detail: stats ? target.name : `${target.name} · PDF時に再計算`, left: 32, top: 40, width: pageWidth - 64, height: pageHeight - 80, sampleId: target.id, columns: ["Events", "% parent", "% total"], rows };
-          pages.push({ sampleName: `${target.name} · 集団統計`, page: appendixPage, elements: [element] });
-        }
-      }
-      if (options.compensation) {
-        const channels = target.compensation.channels;
-        const groups = Array.from({ length: Math.ceil(channels.length / 8) }, (_, index) => channels.slice(index * 8, index * 8 + 8));
-        for (let rowGroup = 0; rowGroup < groups.length; rowGroup++) for (let columnGroup = 0; columnGroup < groups.length; columnGroup++) {
-          const rowChannels = groups[rowGroup];
-          const columnChannels = groups[columnGroup];
-          const rows = rowChannels.map((channel, row) => ({
-            label: channel,
-            values: columnChannels.map((_, column) => `${(((target.compensation.values[rowGroup * 8 + row]?.[columnGroup * 8 + column] ?? 0) * 100)).toFixed(2)}%`),
-          }));
-          const element: PreviewElement = { kind: "detail", id: `${target.id}/comp/${rowGroup}/${columnGroup}`, title: "Spillover matrix", detail: `${target.name} · ${target.compensation.enabled ? "APPLIED" : "NOT APPLIED"}`, left: 32, top: 40, width: pageWidth - 64, height: pageHeight - 80, sampleId: target.id, columns: columnChannels, rows };
-          pages.push({ sampleName: `${target.name} · Compensation`, page: appendixPage, elements: [element] });
-        }
-      }
-    }
-  }
-  const appendixPages = worksheet ? 0 : pages.length - samplePages.length * printPages.length;
   const missingPopulationCount = samplePages.reduce((count, group) => count + group.elements.filter((item) => item.missingPopulationPath !== undefined).length, 0);
   const dialog = document.createElement("dialog");
   dialog.className = "print-preview-dialog";
   dialog.setAttribute("aria-label", worksheet ? "ワークシート印刷プレビュー" : "全サンプル印刷プレビュー");
-  dialog.innerHTML = `<div class="print-preview-heading"><div><h2>印刷プレビュー</h2><p class="hint">${worksheet ? esc(sheet().name) : `${project.samples.length}サンプル · ${esc(sheet().name)}`} · 用紙内に入るワークシート項目を表示しています</p></div><button type="button" data-preview-close aria-label="閉じる">×</button></div><div class="print-preview-toolbar"><button type="button" data-preview-prev>← 前</button><strong data-preview-page-count></strong><button type="button" data-preview-next>次 →</button><span class="spacer"></span><span data-preview-orientation></span></div><div class="print-preview-scroll"><div class="print-preview-holder"><div class="print-preview-paper"></div></div></div><p class="print-preview-note">この画面は配置と表示項目の確認用です。プロットと統計値はPDF生成時にRで再計算するため、実PDFと描画細部が異なることがあります。印刷枠外の項目はPDFに含まれません.${missingPopulationCount ? ` 分画なし: ${missingPopulationCount}件。該当カードに要求した分画名を表示しています。` : ""}${appendixPages ? ` 詳細統計・補償行列を選択しているため、後ろに追加ページが約${appendixPages}ページ続きます。` : ""}</p><div class="axis-dialog-actions"><button type="button" data-preview-cancel>キャンセル</button><button type="button" class="primary" data-preview-save>PDFを保存…</button></div>`;
+  dialog.innerHTML = `<div class="print-preview-heading"><div><h2>印刷プレビュー</h2><p class="hint">${worksheet ? esc(sheet().name) : `${project.samples.length}サンプル · ${esc(sheet().name)}`} · 用紙内に入るワークシート項目を表示しています</p></div><button type="button" data-preview-close aria-label="閉じる">×</button></div><div class="print-preview-toolbar"><button type="button" data-preview-prev>← 前</button><strong data-preview-page-count></strong><button type="button" data-preview-next>次 →</button><span class="spacer"></span><span data-preview-orientation></span></div><div class="print-preview-scroll"><div class="print-preview-holder"><div class="print-preview-paper"></div></div></div><p class="print-preview-note">この画面は配置と表示項目の確認用です。プロットと統計値はPDF生成時にRで再計算するため、実PDFと描画細部が異なることがあります。印刷枠外の項目はPDFに含まれません.${missingPopulationCount ? ` 分画なし: ${missingPopulationCount}件。該当カードに要求した分画名を表示しています。` : ""}</p><div class="axis-dialog-actions"><button type="button" data-preview-cancel>キャンセル</button><button type="button" class="primary" data-preview-save>PDFを保存…</button></div>`;
   document.body.append(dialog);
   let resolvePreview!: (result: boolean) => void;
   const previewResult = new Promise<boolean>((resolve) => { resolvePreview = resolve; });
@@ -4111,11 +4074,6 @@ function printPreviewDialog(worksheet: boolean, options: PdfOptions): Promise<bo
           : '<div class="preview-unavailable">表示する補償チャンネルがありません</div>';
         return `<section class="preview-compensation" style="left:${left}px;top:${top}px;width:${width}px;height:${height}px"><strong>${esc(item.title)} · ${esc(target?.name ?? item.detail)}</strong><small>${config?.enabled ? "補正 ON" : "補正 OFF"}${draftPending ? " · 未適用draft" : ""}</small>${matrix}</section>`;
       }
-      if (item.kind === "detail") {
-        const head = (item.columns ?? []).map((column) => `<th>${esc(column)}</th>`).join("");
-        const body = (item.rows ?? []).map((row) => `<tr><th>${esc(row.label)}</th>${row.values.map((value) => `<td>${esc(value)}</td>`).join("")}</tr>`).join("");
-        return `<section class="preview-detail" style="left:${left}px;top:${top}px;width:${width}px;height:${height}px"><h3>${esc(item.title)} <small>${esc(item.detail)}</small></h3><table><thead><tr><th>Population / Channel</th>${head}</tr></thead><tbody>${body}</tbody></table></section>`;
-      }
       if (item.missingPopulationPath !== undefined)
         return `<section class="preview-plot preview-missing" style="left:${left}px;top:${top}px;width:${width}px;height:${height}px"><strong>${esc(item.title)}</strong><small>${esc(item.detail)}</small><div>このサンプルに分画がありません<br><b>${esc(item.missingPopulationPath)}</b></div></section>`;
       const plot = sheet().plots.find((candidate) => candidate.id === item.sourcePlotId);
@@ -4174,7 +4132,7 @@ async function loadProject() {
 }
 async function exportPdf(worksheet: boolean) {
   const options = worksheet
-    ? { plots: true, statistics: false, compensation: false }
+    ? { plots: true }
     : await reportOptionsDialog();
   if (!options) return;
   await runOperation("PDFを生成中…", async () => {
@@ -4196,7 +4154,6 @@ async function exportPdf(worksheet: boolean) {
       plots: structuredClone(sheet().plots), widgets: structuredClone(printableWidgets),
       printPages: structuredClone(sheet().printPages ?? []), includeWidgets: true,
       worksheetName: sheet().name, includePlots: options.plots,
-      includeStatistics: options.statistics, includeCompensation: options.compensation,
     };
     const testBridge = (window as Window & { __FLOWDESK_TEST_BRIDGE__?: boolean }).__FLOWDESK_TEST_BRIDGE__;
     let result: PreparedPdf["result"];

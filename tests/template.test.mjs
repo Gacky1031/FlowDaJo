@@ -72,3 +72,24 @@ test("template keeps a whole quadrant group when a sheet displays only one quadr
   const template = model.createWorksheetTemplate(source, worksheet, "A");
   assert.deepEqual(template.gateDefinitions.map((item) => item.id), ["q1", "q2"]);
 });
+
+test("DIVA worksheets get one landscape print page and a statistics widget idempotently", () => {
+  const worksheet = {
+    id: "diva-sheet", name: "Imported DIVA", mode: "normal",
+    plots: [{ id: "diva-plot", sampleId: "sample-a", population: [], mode: "scatter",
+      x: axis("FSC-A"), y: axis("SSC-A"), left: 24, top: 24, width: 344, height: 314 }],
+    widgets: [],
+  };
+  model.ensureDivaWorksheetDefaults(worksheet);
+  assert.equal(worksheet.printPages.length, 1);
+  assert.equal(worksheet.printPages[0].orientation, "landscape");
+  assert.equal(worksheet.widgets.filter((widget) => widget.type !== "compensation").length, 1);
+  assert.equal(worksheet.widgets[0].sampleId, "sample-a");
+  const pageId = worksheet.printPages[0].id;
+  const widgetId = worksheet.widgets[0].id;
+  model.ensureDivaWorksheetDefaults(worksheet);
+  assert.equal(worksheet.printPages.length, 1);
+  assert.equal(worksheet.printPages[0].id, pageId);
+  assert.equal(worksheet.widgets.length, 1);
+  assert.equal(worksheet.widgets[0].id, widgetId);
+});

@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { readFileSync, statSync } from "node:fs";
+import { clickDemo, clickToolbarAction } from "./helpers";
 const ready = async (page: Page) => {
   await expect(page.locator(".status")).not.toHaveClass(/pending/);
   await expect(page.locator(".plot-error:visible")).toHaveCount(0);
@@ -7,7 +8,7 @@ const ready = async (page: Page) => {
 async function start(page: Page) {
   await page.goto("/");
   await expect(page.locator(".status")).toContainText("起動完了");
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".statistics")).toContainText("16,000");
   await ready(page);
 }
@@ -119,7 +120,7 @@ test("all seven plot modes, plot styling, log axes and vector/CSV UI exports", a
   expect(plot.dotSize).toBe(4);
   expect(plot.dotOpacity).toBe(0.85);
   expect(plot.x.scale).toBe("log");
-  await page.locator("#csv").click();
+  await clickToolbarAction(page, "#csv");
   await expect(page.locator(".status")).toContainText("統計CSVを保存しました");
   const csv = readFileSync("artifacts/ui-statistics.csv", "utf8");
   expect(csv).toContain("16000");
@@ -175,7 +176,7 @@ test("global gates appear and calculate for a second sample", async ({
   page,
 }) => {
   await start(page);
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.getByRole("button", { name: /Demo 2/ })).toBeVisible();
   await ready(page);
   await page
@@ -210,18 +211,20 @@ test("workspace focus, worksheet template and selectable report", async ({ page 
   await page.locator("#close-properties").click();
   await expect(page.locator("#properties-dialog")).toHaveCount(0);
 
-  await page.locator("#template").click();
+  await clickToolbarAction(page, "#template");
   await expect(page.locator(".status")).toContainText("ワークシートテンプレートを保存しました");
   const template = JSON.parse(readFileSync("artifacts/ui-template.json", "utf8"));
   expect(template.schema).toBe("flowdesk-worksheet-template/1");
   expect(template.worksheet.plots.length).toBeGreaterThan(0);
   expect(template.samples).toBeUndefined();
 
-  await page.locator("#report").click();
+  await clickToolbarAction(page, "#report");
   const report = page.getByRole("dialog", { name: "全サンプルPDFの出力内容" });
   await expect(report).toBeVisible();
-  await report.getByLabel("集団統計").uncheck();
-  await report.getByLabel("Compensation / spillover 行列").uncheck();
-  await report.getByRole("button", { name: "PDFを生成" }).click();
+  await expect(report.getByLabel("集団統計")).toHaveCount(0);
+  await expect(report.getByLabel("Compensation / spillover 行列")).toHaveCount(0);
+  await report.getByRole("button", { name: "印刷プレビューへ" }).click();
+  const preview = page.getByRole("dialog", { name: "全サンプル印刷プレビュー" });
+  await preview.getByRole("button", { name: "PDFを保存…" }).click();
   await expect(page.locator(".status")).toContainText("PDFを保存しました");
 });

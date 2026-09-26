@@ -571,39 +571,6 @@ draw_compensation_widget <- function(widget, project, fallback_sample_id) {
   }
 }
 
-draw_statistics_pages <- function(req) {
-  include_stats <- isTRUE(req$includeStatistics)
-  include_comp <- isTRUE(req$includeCompensation)
-  page_count <- 0L
-  for(s in req$project$samples) {
-    entry<-session_analysis(req$project,s,req$storage); statistics<-entry$stats
-    if(include_stats) for(chunk in split(statistics,ceiling(seq_along(statistics)/18))) {
-      page_count <- page_count + 1L
-      par(mfrow=c(1,1),mar=c(3,3,4,3));plot.new();plot.window(xlim=c(0,1),ylim=c(0,1));title(paste("Population statistics |",s$name))
-      text(.02,.95,"Population",adj=0,font=2,cex=.8)
-      text(c(.61,.79,.98),rep(.95,3),c("Events","% parent","% total"),adj=1,font=2,cex=.8)
-      y<-.90
-      for(row in chunk) {
-        text(.02,y,fit_pdf_text(row$name,.46,.8),adj=0,cex=.8)
-        text(c(.61,.79,.98),rep(y,3),c(format(row$count,big.mark=","),
-          if(is.null(row$percentParent))"NA"else sprintf("%.2f",row$percentParent),
-          if(is.null(row$percentTotal))"NA"else sprintf("%.2f",row$percentTotal)),adj=1,cex=.8)
-        y<-y-.042
-      }
-    }
-    if(include_comp) {
-      config<-s$compensation; channels<-unlist(config$channels); values<-matrix_from(config$values)*100
-      for(rg in split(seq_along(channels),ceiling(seq_along(channels)/8))) for(cg in split(seq_along(channels),ceiling(seq_along(channels)/8))) {
-        page_count <- page_count + 1L
-        par(mfrow=c(1,1),mar=c(3,3,4,3));plot.new();plot.window(xlim=c(0,1),ylim=c(0,1));title(paste("Spillover (%) |",s$name,"|",if(config$enabled)"APPLIED"else"NOT APPLIED"))
-        xs<-seq(.25,.95,length.out=length(cg));ys<-seq(.80,.20,length.out=length(rg));text(xs,.88,channels[cg],cex=.7)
-        for(i in seq_along(rg)){text(.02,ys[i],channels[rg[i]],adj=0,cex=.8);text(xs,ys[i],sprintf("%.2f",values[rg[i],cg]),cex=.8)}
-      }
-    }
-  }
-  page_count
-}
-
 # A worksheet PDF uses the same A4 rectangles shown on the canvas. Cairo's
 # device size is fixed for a document, so pages are rendered separately and
 # merged by the bundled Rust host when both orientations are present.
@@ -672,25 +639,6 @@ export_print_pages <- function(req,data,cards,widgets) {
         printed <- c(printed,value$id)
       }
     },finally=dev.off())
-  }
-  # Optional detail tables are additional report pages. Keep them in a
-  # separate PDF so the worksheet pages above can preserve mixed A4 sizes.
-  if(report && (isTRUE(req$includeStatistics) || isTRUE(req$includeCompensation))) {
-    appendix <- tempfile(pattern="flowdesk-report-details-",tmpdir=dirname(req$path),fileext=".pdf")
-    files <- c(files,appendix)
-    first_page <- pages[[1]]
-    appendix_portrait <- identical(first_page$orientation,"portrait")
-    grDevices::cairo_pdf(appendix,
-      width=if(appendix_portrait)210/25.4 else 297/25.4,
-      height=if(appendix_portrait)297/25.4 else 210/25.4,
-      onefile=TRUE,family=if(.Platform$OS.type=="windows")"Yu Gothic" else "sans")
-    appendix_count <- tryCatch(draw_statistics_pages(req),finally=dev.off())
-    if(appendix_count > 0L) {
-      page_count <- page_count + appendix_count
-    } else {
-      unlink(appendix)
-      files <- setdiff(files,appendix)
-    }
   }
   success <- TRUE
   missing <- Filter(function(card)isTRUE(card$reportPopulationMissing),cards)
@@ -765,7 +713,6 @@ export_vector <- function(req,kind=c("pdf","svg"),single=FALSE) {
       }
     }
   }
-  if(kind=="pdf" && (isTRUE(req$includeStatistics) || isTRUE(req$includeCompensation))) draw_statistics_pages(req)
   dev.off();closed<-TRUE; if(!file.rename(tmp,req$path)){if(!file.copy(tmp,req$path,overwrite=TRUE))fail(paste("Cannot write",kind));unlink(tmp)};list(path=normalizePath(req$path,winslash="/"),plots=if(include_plots)length(cards)else 0)
 }
 
@@ -821,8 +768,6 @@ dispatch <- function(req) {
     req$includeWidgets<-TRUE
     req$reportBySample<-TRUE
     if(is.null(req$includePlots)) req$includePlots<-TRUE
-    if(is.null(req$includeStatistics)) req$includeStatistics<-TRUE
-    if(is.null(req$includeCompensation)) req$includeCompensation<-TRUE
     return(export_vector(req,"pdf",FALSE))
   }
   if(identical(req$action,"worksheet"))return(worksheet(req))

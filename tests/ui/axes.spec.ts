@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { clickDemo, clickToolbarAction } from "./helpers";
 
 test("axis labels: search, keyboard, context details, validation, undo, sheet scope and focus", async ({
   page,
@@ -7,7 +8,7 @@ test("axis labels: search, keyboard, context details, validation, undo, sheet sc
   page.on("pageerror", (e) => failures.push(e.message));
   await page.goto("/");
   await expect(page.locator(".status")).toContainText("起動完了");
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".statistics")).toContainText("16,000");
   const x = page.locator('[data-axis-label="x"]').first();
   const y = page.locator('[data-axis-label="y"]').first();
@@ -105,7 +106,7 @@ test("axis controls remain usable without the inspector at 1100px", async ({
   await page.setViewportSize({ width: 1100, height: 760 });
   await page.goto("/");
   await expect(page.locator(".status")).toContainText("起動完了");
-  await page.locator("#demo").click();
+  await clickDemo(page);
   await expect(page.locator(".statistics")).toContainText("16,000");
   await expect(page.locator(".properties")).not.toBeVisible();
   await page.locator('[data-axis-label="y"]').click();
@@ -117,7 +118,7 @@ test("axis controls remain usable without the inspector at 1100px", async ({
   await d.getByRole("button", { name: "適用して閉じる" }).click();
   await page.locator("#save").click();
   await expect(page.locator(".status")).toContainText("保存しました");
-  await page.locator("#load").click();
+  await clickToolbarAction(page, "#load");
   await page.locator('[data-axis-label="y"]').click({ button: "right" });
   await expect(d.getByLabel("W ·")).toHaveValue("0.8");
   await d.getByRole("button", { name: "キャンセル" }).click();
