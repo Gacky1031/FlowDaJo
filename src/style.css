@@ -107,6 +107,12 @@ header input {
   background: #fafbfd;
   border-bottom: 1px solid #ccd6df;
 }
+.toolbar-menu { position: relative; flex: 0 0 auto; z-index: 40; }
+.toolbar-menu > summary { list-style: none; cursor: pointer; padding: 5px 9px; border: 1px solid #c7d3dc; border-radius: 4px; background: white; white-space: nowrap; }
+.toolbar-menu > summary::-webkit-details-marker { display: none; }
+.toolbar-menu[open] > summary { background: #e7f0fa; }
+.toolbar-menu > div { position: absolute; top: calc(100% + 3px); right: 0; display: grid; gap: 3px; min-width: 190px; padding: 7px; border: 1px solid #b8cbd9; border-radius: 5px; background: white; box-shadow: 0 8px 22px #17354a28; }
+.toolbar-menu > div button { text-align: left; white-space: nowrap; }
 .divider {
   height: 20px;
   border-left: 1px solid #d4dce3;
@@ -150,6 +156,9 @@ h2 {
   font-size: 11px;
 }
 .sample-sort-control select { flex: 1; min-width: 0; }
+.sample-search { display: block; box-sizing: border-box; width: calc(100% - 24px); margin: 4px 12px 8px; }
+.population-breadcrumb { margin: 0 10px 6px; padding: 6px 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #516d81; font-size: 11px; border-bottom: 1px solid #d9e5ec; }
+.sample-group[hidden] { display: none; }
 main {
   min-width: 0;
   min-height: 0;
@@ -323,6 +332,9 @@ main {
   background: transparent;
   pointer-events: none;
 }
+.board:not(.print-layout-mode) .print-page { z-index: 0; border-color: #a8c4d6; border-style: dashed; opacity: .55; }
+.board:not(.print-layout-mode) .print-page-toolbar,
+.board:not(.print-layout-mode) .print-page-corner { display: none; }
 .print-page::before {
   content: "";
   position: absolute;
@@ -1111,6 +1123,7 @@ th:first-child {
 .population:hover {
   background: #edf3f8;
 }
+.population.context-only { opacity: .5; }
 .population.selected {
   background: #dcebf6;
   color: #145e94;
@@ -1487,6 +1500,9 @@ dialog.properties::backdrop { background: #102e4555; }
   outline: 2px solid #b57b18;
   outline-offset: -2px;
 }
+.plot-card.comp-cell-linked { outline: 3px solid #23a78a; outline-offset: 2px; }
+.comp-widget-matrix input.comp-plot-linked { box-shadow: 0 0 0 2px #23a78a; }
+.comp-widget-matrix input.comp-edited { background: #fff0ce; border-color: #d39b32; }
 .plot-card.selected-card .plot-head {
   background: #fff4dc;
 }
@@ -1506,6 +1522,15 @@ dialog.properties::backdrop { background: #102e4555; }
   overflow: hidden;
   background: #f4f7fa;
 }
+.exact-pdf-dialog { width: min(1050px, 96vw); }
+.exact-pdf-frame { display: block; width: 100%; height: min(73vh, 760px); border: 1px solid #d6e0e8; background: white; }
+.template-dialog { width: min(760px, 94vw); max-height: 90vh; overflow: auto; }
+.template-mapping { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.template-mapping fieldset { min-width: 0; max-height: 44vh; overflow: auto; border: 1px solid #d3dfe8; }
+.template-mapping label { display: grid; grid-template-columns: minmax(100px, 1fr) auto minmax(140px, 1fr); align-items: center; gap: 8px; margin: 7px 0; font-size: 12px; }
+.template-mapping label small { color: #718391; }
+.template-mapping select { min-width: 0; max-width: 100%; }
+.template-error { color: #a22e34; min-height: 1.2em; }
 .print-preview-heading, .print-preview-toolbar { display: flex; align-items: center; gap: 10px; }
 .print-preview-heading { justify-content: space-between; }
 .print-preview-heading h2 { margin: 0 0 4px; }
@@ -1517,6 +1542,9 @@ dialog.properties::backdrop { background: #102e4555; }
 .print-preview-paper { position: absolute; inset: 0 auto auto 0; overflow: hidden; transform-origin: top left; background: white; box-shadow: 0 2px 14px #17354a30; }
 .preview-plot, .preview-statistics { position: absolute; overflow: hidden; box-sizing: border-box; border: 1px solid #8ea9bc; border-radius: 3px; background: #fff; color: #243b4b; font-size: 10px; }
 .preview-plot { display: flex; flex-direction: column; padding: 5px; }
+.preview-missing { border-color: #c78e41; background: #fffaf1; }
+.preview-missing > div { display: grid; align-content: center; gap: 6px; flex: 1; color: #87612d; text-align: center; }
+.preview-missing b { overflow-wrap: anywhere; color: #654719; }
 .preview-plot strong, .preview-statistics strong { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 10px; }
 .preview-plot small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #6a7e8b; font-size: 8px; }
 .preview-plot img { display: block; width: 100%; height: 0; min-height: 0; flex: 1; object-fit: contain; }
@@ -1525,7 +1553,18 @@ dialog.properties::backdrop { background: #102e4555; }
 .preview-plot-area::before { width: 5px; height: 5px; left: 32%; top: 40%; box-shadow: 8px 6px #3a789f, 15px -4px #3a789f, 20px 13px #3a789f, 28px 4px #3a789f, 39px -7px #3a789f, 51px 11px #3a789f; }
 .preview-statistics { padding: 6px; }
 .preview-statistics-rows { margin-top: 5px; color: #4c6171; font-size: 8px; }
-.preview-statistics-rows div { display: flex; justify-content: space-between; border-bottom: 1px solid #e7edf1; padding: 2px 0; }
+.preview-statistics-table, .preview-compensation-table { max-height: calc(100% - 28px); margin-top: 5px; overflow: auto; color: #4c6171; font-size: 8px; }
+.preview-statistics-row { display: grid; grid-auto-columns: minmax(max-content, 1fr); grid-auto-flow: column; gap: 6px; border-bottom: 1px solid #e7edf1; padding: 2px 0; }
+.preview-statistics-row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+.preview-statistics-row > span:first-child { text-align: left; }
+.preview-statistics-head { position: sticky; top: 0; background: #f3f7fa; font-weight: 700; }
+.preview-compensation { position: absolute; display: flex; flex-direction: column; gap: 3px; box-sizing: border-box; overflow: hidden; padding: 6px; border: 1px solid #8ea9bc; border-radius: 3px; background: #fff; color: #243b4b; font-size: 10px; }
+.preview-compensation > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.preview-compensation > small { color: #617586; font-size: 8px; }
+.preview-compensation-table table { width: 100%; border-collapse: collapse; }
+.preview-compensation-table th, .preview-compensation-table td { padding: 2px 4px; border-bottom: 1px solid #e4ebf0; text-align: right; white-space: nowrap; }
+.preview-compensation-table th:first-child { text-align: left; }
+.preview-unavailable { padding: 6px 2px; color: #7b5a2c; font-size: 9px; }
 .preview-detail { position: absolute; box-sizing: border-box; overflow: hidden; padding: 14px 18px; border: 1px solid #d8e1e8; background: #fff; color: #243b4b; }
 .preview-detail h3 { margin: 0 0 10px; font-size: 16px; }
 .preview-detail h3 small { margin-left: 8px; color: #718391; font-size: 11px; font-weight: 400; }

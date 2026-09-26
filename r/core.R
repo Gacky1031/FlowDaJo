@@ -352,6 +352,13 @@ dispatch <- function(req) {
       if (!file.copy(tmp, req$path, overwrite = TRUE)) fail("Cannot save worksheet template")
       list(path = req$path)
     },
+    load_template = {
+      t <- jsonlite::read_json(req$path, simplifyVector = FALSE)
+      if (!is.list(t) || !identical(t$schema, "flowdesk-worksheet-template/1") ||
+          !is.list(t$worksheet) || is.null(t$worksheet$plots) || is.null(t$gateDefinitions))
+        fail("Invalid worksheet template")
+      t
+    },
     save = {
       if (!grepl("\\.json$", req$path, ignore.case=TRUE)) fail("Project output must end in .json")
       p <- check_project(req$project); p$engine <- version_info()

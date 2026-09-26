@@ -1,5 +1,6 @@
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { createInterface } from "node:readline";
+import { copyFileSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 export function rWorker(storage) {
   const processR = spawn(
@@ -28,9 +29,24 @@ export function rWorker(storage) {
     if (!job) return;
     try {
       const response = JSON.parse(line);
-      response.ok
-        ? job.resolve(response.data)
-        : job.reject(new Error(response.error));
+      if (!response.ok) {
+        job.reject(new Error(response.error));
+        return;
+      }
+      const data = response.data;
+      if (["worksheet_pdf", "worksheet_report_pdf"].includes(job.payload?.action) && data.pageFiles?.length) {
+        try {
+          const files = data.pageFiles;
+          if (files.length === 1) copyFileSync(files[0], job.payload.path);
+          else execFileSync("pdfunite", [...files, job.payload.path]);
+          for (const file of files) unlinkSync(file);
+          delete data.pageFiles;
+        } catch (error) {
+          job.reject(error);
+          return;
+        }
+      }
+      job.resolve(data);
     } catch (e) {
       job.reject(e);
     }
@@ -46,7 +62,7 @@ export function rWorker(storage) {
   return {
     call: (payload) =>
       new Promise((resolve, reject) => {
-        pending.push({ resolve, reject });
+        pending.push({ resolve, reject, payload });
         processR.stdin.write(JSON.stringify({ ...payload, storage }) + "\n");
       }),
     close: () => processR.kill(),

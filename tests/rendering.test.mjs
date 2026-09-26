@@ -17,7 +17,12 @@ test("v0.4 scientific rendering payload, gates, modes, and vector/statistics exp
     const base = { sampleId: "active", population: [], left: 0, top: 0, width: 300, height: 250,
       x: axis("FITC-A", "log"), y: axis("PE-A", "logicle"), bins: 96, contourPercent: 10 };
     const modes = ["scatter", "histogram", "cdf", "density", "contour", "pseudocolor", "zebra"];
-    const plots = modes.map((mode, i) => ({ ...structuredClone(base), id: mode, mode, top: i * 260 }));
+    const plots = modes.map((mode, i) => ({
+      ...structuredClone(base), id: mode, mode,
+      // Keep every card inside the default A4 safe area, matching the UI grid.
+      left: 16 + (i % 3) * 360,
+      top: 16 + Math.floor(i / 3) * 250,
+    }));
     const result = await w.call({ action: "worksheet", project, sampleId: sample.id, plots });
     assert.deepEqual(result.errors, []);
     for (const mode of modes) assert.equal(result.plots[mode].mode, mode);

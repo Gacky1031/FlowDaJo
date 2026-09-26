@@ -16,11 +16,16 @@
         "width": 1480,
         "height": 960,
         "minWidth": 1080,
-        "minHeight": 720
+        "minHeight": 720,
+        "dragDropEnabled": false
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost"
+      "csp": "default-src 'self'; img-src 'self' data: asset: http://asset.localhost; frame-src 'self' asset: http://asset.localhost; object-src 'self' asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$APPCACHE/previews/*.pdf"]
+      }
     }
   },
   "bundle": {

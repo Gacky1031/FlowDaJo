@@ -7,6 +7,7 @@ import type {
   StatisticsWidget,
   Worksheet,
   WorksheetPlot,
+  WorksheetTemplate,
 } from "./types";
 export const uid = () => crypto.randomUUID();
 export const populationPalette = [
@@ -82,6 +83,181 @@ export function newPlot(
     width: 344,
     height: 314,
   };
+}
+export function createWorksheetTemplate(p: Project, worksheet: Worksheet, activeSampleId: string): WorksheetTemplate {
+  const sourceIds = new Set<string>();
+  const addSource = (id?: string) => sourceIds.add(!id || id === "active" ? activeSampleId : id);
+  if (worksheet.mode !== "normal") addSource(activeSampleId);
+  for (const plot of worksheet.plots) addSource(plot.sampleId);
+  for (const widget of worksheet.widgets ?? []) addSource(widget.sampleId);
+  const needed = new Set<string>();
+  const includeAncestors = (id: string) => {
+    while (id !== "root" && !needed.has(id)) {
+      const gate = p.gates.find((item) => item.id === id);
+      if (!gate) throw Error(`テンプレートの分画IDが見つかりません: ${id}`);
+      needed.add(id);
+      id = gate.parent;
+    }
+  };
+  for (const plot of worksheet.plots) {
+    const sid = plot.sampleId === "active" ? activeSampleId : plot.sampleId;
+    const populationId = resolveGate(p, plot.population, sid);
+    if (populationId === undefined) throw Error(`分画が見つかりません: ${plot.population.join(" / ")}`);
+    includeAncestors(populationId);
+    for (const gate of p.gates) {
+      if (!gateAppliesToSample(gate, sid)) continue;
+      const path = pathFor(p, gate.id, sid);
+      if (plot.population.every((part, index) => path[index] === part)) includeAncestors(gate.id);
+    }
+    for (const id of plot.displayGates ?? []) includeAncestors(id);
+  }
+  for (const widget of worksheet.widgets ?? []) {
+    if (widget.type === "compensation") continue;
+    const sid = !widget.sampleId || widget.sampleId === "active" ? activeSampleId : widget.sampleId;
+    for (const gate of p.gates) if (gateAppliesToSample(gate, sid)) includeAncestors(gate.id);
+  }
+  let prior = -1;
+  while (prior !== needed.size) {
+    prior = needed.size;
+    for (const gate of p.gates) {
+      if (!needed.has(gate.id) || !gate.groupId) continue;
+      for (const peer of p.gates) if (peer.groupId === gate.groupId &&
+          gateScope(peer) === gateScope(gate) &&
+          (gateScope(gate) === "global" || peer.sampleId === gate.sampleId))
+        includeAncestors(peer.id);
+    }
+  }
+  const gates = p.gates.filter((gate) => needed.has(gate.id));
+  for (const gate of gates) if (gateScope(gate) === "sample") sourceIds.add(gate.sampleId);
+  const bindings = [...sourceIds].map((id) => {
+    const sample = p.samples.find((item) => item.id === id);
+    if (!sample) throw Error(`テンプレート元のサンプルが見つかりません: ${id}`);
+    return { id, name: sample.name, channels: structuredClone(sample.channels) };
+  });
+  return {
+    schema: "flowdesk-worksheet-template/1", name: p.name,
+    worksheet: structuredClone(worksheet), gateDefinitions: structuredClone(gates),
+    sampleBindings: bindings,
+  };
+}
+export function templateSourceIds(template: WorksheetTemplate): string[] {
+  return [...new Set([
+    ...(template.sampleBindings ?? []).map((item) => item.id),
+    ...template.worksheet.plots.map((item) => item.sampleId).filter((id) => id !== "active"),
+    ...(template.worksheet.widgets ?? []).map((item) => item.sampleId).filter((id): id is string => !!id && id !== "active"),
+    ...template.gateDefinitions.filter((gate) => gateScope(gate) === "sample").map((gate) => gate.sampleId),
+  ])];
+}
+export function templateChannels(template: WorksheetTemplate): string[] {
+  const channels = new Set<string>();
+  const add = (axis: Axis) => { if (axis.channel) channels.add(axis.channel); };
+  for (const plot of template.worksheet.plots) { add(plot.x); add(plot.y); }
+  for (const gate of template.gateDefinitions) { add(gate.x); add(gate.y); }
+  for (const widget of template.worksheet.widgets ?? []) if (widget.type !== "compensation")
+    for (const channel of widget.mfiChannels ?? []) channels.add(channel);
+  return [...channels];
+}
+export function applyWorksheetTemplate(
+  p: Project, template: WorksheetTemplate, sampleMap: Record<string, string>,
+  channelMap: Record<string, string>, activeSampleId: string,
+): { worksheet: Worksheet; gates: Gate[] } {
+  if (template?.schema !== "flowdesk-worksheet-template/1" || !template.worksheet ||
+      !Array.isArray(template.worksheet.plots) || !Array.isArray(template.gateDefinitions))
+    throw Error("ワークシートテンプレートの形式が正しくありません。");
+  if (!p.samples.length) throw Error("先に適用先のサンプルを読み込んでください。");
+  const target = (id: string) => {
+    const mapped = id === "active" ? activeSampleId : sampleMap[id];
+    if (!p.samples.some((item) => item.id === mapped)) throw Error(`サンプルの対応がありません: ${id}`);
+    return mapped;
+  };
+  for (const id of templateSourceIds(template)) target(id);
+  const mappedChannel = (channel: string) => {
+    const mapped = channelMap[channel];
+    if (!mapped) throw Error(`検出器の対応がありません: ${channel}`);
+    return mapped;
+  };
+  const usedSamples = new Set<string>(templateSourceIds(template).map(target));
+  usedSamples.add(activeSampleId);
+  if (template.gateDefinitions.some((gate) => gateScope(gate) === "global"))
+    for (const sample of p.samples) usedSamples.add(sample.id);
+  for (const channel of templateChannels(template)) {
+    const mapped = mappedChannel(channel);
+    for (const id of usedSamples) {
+      const sample = p.samples.find((item) => item.id === id)!;
+      if (!sample.channels.some((item) => item.id === mapped))
+        throw Error(`${sample.name} に検出器 ${mapped} がありません（元: ${channel}）。`);
+    }
+  }
+  const remapAxis = (axis: Axis) => ({ ...axis, channel: mappedChannel(axis.channel) });
+  const remapped = new Map<string, string>();
+  const additions: Gate[] = [];
+  const groups = new Map<string, string>();
+  let pending = [...template.gateDefinitions];
+  while (pending.length) {
+    const rest: Gate[] = [];
+    let progress = false;
+    for (const source of pending) {
+      const parent = source.parent === "root" ? "root" : remapped.get(source.parent);
+      if (!parent) { rest.push(source); continue; }
+      const scope = gateScope(source);
+      const sampleId = scope === "global" ? (sampleMap[source.sampleId] ?? activeSampleId) : target(source.sampleId);
+      const gate: Gate = {
+        ...structuredClone(source), id: uid(), parent, sampleId, scope,
+        x: remapAxis(source.x), y: remapAxis(source.y),
+        ...(source.groupId ? { groupId: groups.get(source.groupId) ?? (() => {
+          const id = uid(); groups.set(source.groupId!, id); return id;
+        })() } : {}),
+      };
+      delete gate.divaSourceId;
+      delete gate.divaTemplate;
+      const overlapping = [...p.gates, ...additions].filter((item) =>
+        item.parent === parent && item.name === gate.name &&
+        (scope === "global" || gateScope(item) === "global" || item.sampleId === sampleId));
+      if (overlapping.length) {
+        const sameShape = (item: Gate) => JSON.stringify([
+          item.type, item.x, item.y, item.bounds, item.vertices, item.center,
+          item.quadrant, item.edgeExtent,
+        ]);
+        const reusable = overlapping.length === 1 && gateScope(overlapping[0]) === scope &&
+          (scope === "global" || overlapping[0].sampleId === sampleId) &&
+          sameShape(overlapping[0]) === sameShape(gate);
+        if (!reusable) throw Error(`分画「${gate.name}」が既存分画と衝突します。元の分画を確認してください。`);
+        remapped.set(source.id, overlapping[0].id);
+      } else {
+        additions.push(gate);
+        remapped.set(source.id, gate.id);
+      }
+      progress = true;
+    }
+    if (!progress) throw Error("テンプレートの分画階層に欠落または循環があります。");
+    pending = rest;
+  }
+  const worksheet = structuredClone(template.worksheet);
+  worksheet.id = uid();
+  delete worksheet.divaSourceId;
+  delete worksheet.divaTemplate;
+  const names = new Set((p.worksheets ?? []).map((item) => item.name));
+  const baseName = worksheet.name || "Worksheet";
+  let name = baseName, n = 2;
+  while (names.has(name)) name = `${baseName} (${n++})`;
+  worksheet.name = name;
+  worksheet.plots = worksheet.plots.map((plot) => ({
+    ...plot, id: uid(), x: remapAxis(plot.x), y: remapAxis(plot.y),
+    sampleId: worksheet.mode === "normal" ? target(plot.sampleId) : "active",
+    displayGates: (plot.displayGates ?? []).map((id) => {
+      const mapped = remapped.get(id);
+      if (!mapped) throw Error(`表示ゲートの対応がありません: ${id}`);
+      return mapped;
+    }),
+  }));
+  worksheet.widgets = (worksheet.widgets ?? []).map((widget) => ({
+    ...widget, id: uid(), sampleId: worksheet.mode === "normal" ? target(widget.sampleId ?? "active") : "active",
+    ...(widget.type === "compensation"
+      ? { targetSampleIds: (widget.targetSampleIds ?? []).map(target), visibleChannels: widget.visibleChannels?.map(mappedChannel) }
+      : { mfiChannels: (widget.mfiChannels ?? []).map(mappedChannel) }),
+  }));
+  worksheet.printPages = (worksheet.printPages ?? []).map((page) => ({ ...page, id: uid() }));
+  return { worksheet, gates: additions };
 }
 export function newStatisticsWidget(
   plots: WorksheetPlot[] = [],

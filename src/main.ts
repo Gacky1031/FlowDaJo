@@ -1,4 +1,4 @@
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { invoke, isTauri, convertFileSrc } from "@tauri-apps/api/core";
 import { open, save, confirm } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type {
@@ -17,6 +17,7 @@ import type {
   DivaCompensation,
   Compensation,
   PrintPage,
+  WorksheetTemplate,
 } from "./types";
 import {
   uid,
@@ -37,6 +38,10 @@ import {
   a4Page,
   newStatisticsWidget,
   newCompensationWidget,
+  createWorksheetTemplate,
+  templateSourceIds,
+  templateChannels,
+  applyWorksheetTemplate,
 } from "./model";
 import { LatestJob } from "./jobs";
 import { draw, overlay, gestures } from "./plot";
@@ -72,8 +77,22 @@ let gateScopeMode: "global" | "sample" = "global";
 let gateFilter: "all" | "global" | "sample" = "all";
 let focusedCard = "";
 let leftSidebarVisible = true;
+let printLayoutMode = false;
+let sampleSearch = "";
+let populationSearch = "";
 const selectedCards = new Set<string>();
 const selectedWidgets = new Set<string>();
+const compensationDrafts = new Map<string, Compensation>();
+const compensationDraftKey = (widget: CompensationWidget, target: Sample) => `${widget.id}\u0000${target.id}`;
+function compensationDraft(widget: CompensationWidget, target: Sample): Compensation {
+  const key = compensationDraftKey(widget, target);
+  let draft = compensationDrafts.get(key);
+  if (!draft) {
+    draft = structuredClone(target.compensation);
+    compensationDrafts.set(key, draft);
+  }
+  return draft;
+}
 const printPageSize = (page: Pick<PrintPage, "orientation" | "scale">) => {
   const scale = page.scale ?? 1;
   return page.orientation === "portrait"
@@ -95,6 +114,7 @@ function wirePrintPages(board: HTMLElement) {
     const orientation = last?.orientation ?? "landscape";
     const left = last ? last.left + printPageSize(last).width + a4Page.gap : 0;
     remember();
+    printLayoutMode = true;
     sheet().printPages ??= [];
     sheet().printPages!.push({ id: uid(), left, top: last?.top ?? 0, orientation, scale: last?.scale ?? 1 });
     changed(false);
@@ -186,6 +206,9 @@ let projectPath: string | null = null,
 let data: WorksheetResult = { plots: {}, stats: {}, errors: {}, workerPid: 0 };
 let history: Project[] = [],
   future: Project[] = [];
+const recoveryKey = "flowdesk-unsaved-project-v1";
+let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+let recoveryStorageFailed = false;
 const sheet = () =>
   project.worksheets!.find((s) => s.id === project.activeWorksheet)!;
 const sample = (id = sampleId) => project.samples.find((s) => s.id === id);
@@ -266,14 +289,21 @@ function newSamplePlot(s: Sample, index: number, population: string[] = []) {
 }
 function updatePlotSelectionControls() {
   const plots = sheet().plots;
-  const allSelected = plots.length > 0 && plots.every((plot) => selectedCards.has(plot.id));
+  const items = [...plots, ...(sheet().widgets ?? [])];
+  const allSelected = items.length > 0 && items.every((item) =>
+    isPlotItem(item) ? selectedCards.has(item.id) : selectedWidgets.has(item.id),
+  );
   const button = document.querySelector<HTMLButtonElement>("#select-all-plots");
   if (button) {
-    button.textContent = allSelected ? "選択解除" : "全プロット選択";
+    button.textContent = allSelected ? "選択解除" : "全項目選択";
     button.setAttribute("aria-pressed", String(allSelected));
   }
   const info = document.querySelector<HTMLElement>("#selection-info");
-  if (info) info.textContent = `選択: ${selectedCards.size + selectedWidgets.size || (card() ? 1 : 0)}`;
+  if (info) {
+    info.textContent = selectedCards.size || selectedWidgets.size
+      ? `選択: ${selectedCards.size}プロット + ${selectedWidgets.size}ウィジェット`
+      : card() ? "選択: 0 · 操作先: 表示中のプロット" : "選択: 0";
+  }
   const alignmentMenu = document.querySelector<HTMLDetailsElement>("#align-items-menu");
   const alignmentSummary = alignmentMenu?.querySelector<HTMLElement>("summary");
   const alignable = selectedWorksheetItems().length >= 2;
@@ -447,14 +477,10 @@ function axisIsAuto(a: WorksheetPlot["x"]) {
 type RangeEntry = { plot: WorksheetPlot; result: WorksheetData };
 function synchronizeAxisRanges(result: WorksheetResult) {
   let needsAnalyze = false;
-  const setRange = (a: WorksheetPlot["x"], range: DisplayRange, expandAuto = false) => {
-    const hasRange = a.min !== undefined && a.max !== undefined;
-    if (a.autoRange !== true && (a.min !== undefined || a.max !== undefined)) return;
-    if (a.autoRange === true && hasRange && (!expandAuto || (range[0] >= a.min! && range[1] <= a.max!))) return;
-    a.autoRange = true;
-    a.min = range[0];
-    a.max = range[1];
-  };
+  const currentRange = (axis: WorksheetPlot["x"]) =>
+    axis.min === undefined || axis.max === undefined
+      ? undefined
+      : displayRange([axis.min, axis.max]);
   const plots = sheet().plots;
   if (worksheetMode() === "global") {
     for (const plot of plots) {
@@ -464,10 +490,16 @@ function synchronizeAxisRanges(result: WorksheetResult) {
         if (side === "y" && oneDimensional(plot)) continue;
         const range = displayRange(side === "x" ? d.xRange : d.yRange);
         if (!range) continue;
-        setRange(plot[side], range);
-        // The first result already uses this exact range, so no second R job is needed.
-        d[side].min = range[0];
-        d[side].max = range[1];
+        const axisValue = plot[side];
+        if (!currentRange(axisValue)) {
+          axisValue.autoRange = true;
+          axisValue.min = range[0];
+          axisValue.max = range[1];
+        }
+        // Global axes keep their first resolved range across sample changes.
+        const fixedRange = currentRange(axisValue) ?? range;
+        d[side].min = fixedRange[0];
+        d[side].max = fixedRange[1];
       }
     }
     return false;
@@ -490,10 +522,18 @@ function synchronizeAxisRanges(result: WorksheetResult) {
   const targetRange = (entries: RangeEntry[], side: AxisSide): DisplayRange | undefined => {
     const explicit = entries
       .map(({ plot }) => plot[side])
-      .find((a) => a.autoRange !== true && a.min !== undefined && a.max !== undefined);
-    if (explicit) return [explicit.min!, explicit.max!];
+      .filter((a) => !axisIsAuto(a))
+      .map(currentRange)
+      .filter((range): range is DisplayRange => !!range);
+    const distinctExplicit = new Map(explicit.map((range) => [JSON.stringify(range), range]));
+    if (distinctExplicit.size === 1) return [...distinctExplicit.values()][0];
+
+    // Conflicting manual ranges are intentionally independent. Autoscale only
+    // the automatic plots, using the backend's raw data limits rather than a
+    // previously synchronized display range.
     const ranges = entries
-      .map(({ result: d }) => displayRange(side === "x" ? d.xRange : d.yRange))
+      .filter(({ plot }) => axisIsAuto(plot[side]))
+      .map(({ result: d }) => displayRange(side === "x" ? d.autoXRange ?? d.xRange : d.autoYRange ?? d.yRange))
       .filter((range): range is DisplayRange => !!range);
     if (!ranges.length) return;
     const lo = Math.min(...ranges.map((range) => range[0]));
@@ -506,16 +546,17 @@ function synchronizeAxisRanges(result: WorksheetResult) {
       const range = targetRange(entries, side);
       if (!range) continue;
       entries.forEach(({ plot, result: d }) => {
-        const actual = displayRange(side === "x" ? d.xRange : d.yRange);
         const axisValue = plot[side];
         if (axisIsAuto(axisValue)) {
-          if (!sameDisplayRange(actual, range)) needsAnalyze = true;
-          else {
-            d[side].min = range[0];
-            d[side].max = range[1];
+          if (!sameDisplayRange(currentRange(axisValue), range)) {
+            axisValue.autoRange = true;
+            axisValue.min = range[0];
+            axisValue.max = range[1];
+            needsAnalyze = true;
           }
+          d[side].min = range[0];
+          d[side].max = range[1];
         }
-        setRange(axisValue, range, true);
       });
     }
   }
@@ -536,6 +577,67 @@ const rpc = <T>(
   args: Record<string, unknown> = {},
 ): Promise<T> => invoke("request", { payload: { action, ...args } });
 const clone = () => structuredClone(project);
+function recoveryEnabled() {
+  const test = window as Window & { __FLOWDESK_TEST_BRIDGE__?: boolean; __FLOWDESK_TEST_RECOVERY__?: boolean };
+  return isTauri() && (!test.__FLOWDESK_TEST_BRIDGE__ || !!test.__FLOWDESK_TEST_RECOVERY__);
+}
+function writeRecovery() {
+  if (!recoveryEnabled() || !dirty) return;
+  try {
+    localStorage.setItem(recoveryKey, JSON.stringify({
+      schema: "flowdesk-recovery/1", savedAt: Date.now(), project: clone(),
+      projectPath, sampleId,
+    }));
+  } catch (error) {
+    if (!recoveryStorageFailed) {
+      recoveryStorageFailed = true;
+      message(`未保存の復旧用データを記録できません: ${String(error)}`, true);
+    }
+  }
+}
+function scheduleRecovery() {
+  if (!recoveryEnabled() || !dirty) return;
+  if (recoveryTimer) clearTimeout(recoveryTimer);
+  recoveryTimer = setTimeout(() => { recoveryTimer = undefined; writeRecovery(); }, 1200);
+}
+function clearRecovery() {
+  if (recoveryTimer) clearTimeout(recoveryTimer);
+  recoveryTimer = undefined;
+  try { localStorage.removeItem(recoveryKey); } catch { /* Storage may be disabled. */ }
+}
+async function restoreRecovery() {
+  if (!recoveryEnabled()) return;
+  let snapshot: { schema: string; savedAt: number; project: Project; projectPath: string | null; sampleId: string } | null = null;
+  try {
+    const raw = localStorage.getItem(recoveryKey);
+    if (raw) snapshot = JSON.parse(raw);
+  } catch { clearRecovery(); return; }
+  if (!snapshot) return;
+  if (snapshot.schema !== "flowdesk-recovery/1" || !snapshot.project ||
+      snapshot.project.schema !== "flowdesk-r/1" || !Array.isArray(snapshot.project.samples) ||
+      !Number.isFinite(snapshot.savedAt) || Date.now() - snapshot.savedAt > 30 * 86400000) {
+    clearRecovery(); return;
+  }
+  const when = new Date(snapshot.savedAt).toLocaleString("ja-JP");
+  if (!(await confirm(`前回の未保存ワークスペース（${when}）を復旧しますか？`, { title: "FlowDeskの復旧" }))) {
+    clearRecovery(); return;
+  }
+  try {
+    jobs.invalidate();
+    project = migrate(snapshot.project);
+    projectPath = snapshot.projectPath;
+    sampleId = project.samples.some((item) => item.id === snapshot!.sampleId) ? snapshot.sampleId : project.samples[0]?.id ?? "";
+    activeCard = sheet().plots[0]?.id ?? "";
+    history = []; future = [];
+    data = { plots: {}, stats: {}, errors: {}, workerPid: data.workerPid };
+    dirty = true;
+    changed();
+    message("未保存のワークスペースを復旧しました。内容を確認して保存してください。");
+  } catch (error) {
+    clearRecovery();
+    message(`復旧用データを読み込めません: ${String(error)}`, true);
+  }
+}
 const compKey = (c: Sample["compensation"] | undefined) =>
   c
     ? JSON.stringify([
@@ -559,7 +661,8 @@ function statusBar() {
   const f = document.querySelector("footer");
   if (f) {
     f.className = `status ${pending ? "pending" : ""} ${failed ? "error" : ""}`;
-    f.innerHTML = `<span class="led"></span><span>${esc(status)}</span><span class="spacer"></span><span>${dirty ? "未保存 · " : ""}${pending ? "再計算中 · 操作を続けられます" : "Ready"}${data.workerPid ? ` · R ${data.workerPid}` : ""}</span>`;
+    const location = projectPath ? projectPath.split(/[\\/]/).pop() : "保存先未設定";
+    f.innerHTML = `<span class="led"></span><span>${esc(status)}</span><span class="spacer"></span><span title="${esc(projectPath ?? "")}">${dirty ? "未保存 · " : ""}${esc(location ?? "")}</span><span>${pending ? "再計算中" : "Ready"}${data.workerPid ? ` · R ${data.workerPid}` : ""}</span>`;
   }
   document.querySelector("#save")?.classList.toggle("dirty", dirty);
 }
@@ -605,12 +708,18 @@ function changed(calculate = true) {
   render();
   if (calculate) analyze();
   else statusBar();
+  scheduleRecovery();
 }
 function statisticsWidgetSampleId(widget: StatisticsWidget) {
   if (worksheetMode() === "global") return sampleId;
   return widget.sampleId && widget.sampleId !== "active" && project.samples.some((item) => item.id === widget.sampleId)
     ? widget.sampleId
     : sampleId;
+}
+function printableWidgetSampleId(widget: WorksheetWidget) {
+  if (worksheetMode() === "global") return "active";
+  if (isStatisticsWidget(widget)) return statisticsWidgetSampleId(widget);
+  return compensationWidgetSample(widget)?.id ?? sampleId;
 }
 function statisticsWidgetContents(widget: StatisticsWidget) {
   const targetSampleId = statisticsWidgetSampleId(widget);
@@ -646,7 +755,8 @@ function compensationWidgetSample(widget: CompensationWidget) {
 }
 function compensationWidget(widget: CompensationWidget) {
   const source = compensationWidgetSample(widget);
-  const comp = source?.compensation;
+  const comp = source ? compensationDraft(widget, source) : undefined;
+  const draftPending = !!source && JSON.stringify(comp) !== JSON.stringify(source.compensation);
   const targets = widget.targetSampleIds ?? (source ? [source.id] : []);
   const visibleChannels = comp?.channels.filter((channel) => widget.visibleChannels === undefined || widget.visibleChannels.includes(channel)) ?? [];
   const visibleIndices = visibleChannels.map((channel) => comp!.channels.indexOf(channel));
@@ -672,7 +782,7 @@ function compensationWidget(widget: CompensationWidget) {
   const divaPresetControl = presets.length
     ? `<details class="comp-diva-presets"><summary>DIVA compensation preset · ${presets.length}</summary><label>DIVA行列<select data-diva-comp-preset="${esc(widget.id)}">${presets.map((item) => `<option value="${esc(item.id)}" ${item.id === preset?.id ? "selected" : ""}>${esc(item.name)} · ${esc(item.file)}</option>`).join("")}</select></label><button type="button" data-apply-diva-comp="${esc(widget.id)}">選択サンプルへ適用</button></details>`
     : "";
-  return `<section class="compensation-widget ${pending ? "stale" : ""} ${selectedWidgets.has(widget.id) ? "selected-widget" : ""}" data-compensation-widget="${esc(widget.id)}" style="left:${widget.left}px;top:${widget.top}px;width:${widget.width}px;height:${widget.height}px"><header class="statistics-widget-head" data-move="widget:${esc(widget.id)}"><label class="plot-select" title="一括操作の対象"><input type="checkbox" data-select-widget="${esc(widget.id)}" ${selectedWidgets.has(widget.id) ? "checked" : ""} aria-label="ウィジェットを一括操作の対象にする"></label><span class="grip">⠿</span><strong>Compensation</strong><span class="widget-sample">${esc(source?.name ?? "サンプルなし")}</span><button type="button" data-remove-widget="${esc(widget.id)}" title="Compensationウィジェットを削除" aria-label="Compensationウィジェットを削除">×</button></header><div class="compensation-widget-content"><div class="comp-widget-controls"><label>編集中<select data-comp-source="${esc(widget.id)}" ${sourceOptions.length ? "" : "disabled"}>${selectOptions(sourceOptions, selectedSource)}</select></label><label class="check"><input type="checkbox" data-comp-enabled="${esc(widget.id)}" ${comp?.enabled ? "checked" : ""}> 補正 ON</label></div>${channelVisibility}${matrix}<fieldset class="comp-target-list"><legend>適用先（チェックしたサンプル）</legend><div>${destinations || '<p class="hint">サンプルがありません。</p>'}</div></fieldset><button type="button" class="primary" data-apply-comp-widget="${esc(widget.id)}" ${source && comp?.channels.length ? "" : "disabled"}>編集行列を適用</button>${divaPresetControl}</div><div class="resize-grip" data-resize="widget:${esc(widget.id)}" title="サイズを変更">◢</div></section>`;
+  return `<section class="compensation-widget ${pending ? "stale" : ""} ${selectedWidgets.has(widget.id) ? "selected-widget" : ""}" data-compensation-widget="${esc(widget.id)}" style="left:${widget.left}px;top:${widget.top}px;width:${widget.width}px;height:${widget.height}px"><header class="statistics-widget-head" data-move="widget:${esc(widget.id)}"><label class="plot-select" title="一括操作の対象"><input type="checkbox" data-select-widget="${esc(widget.id)}" ${selectedWidgets.has(widget.id) ? "checked" : ""} aria-label="ウィジェットを一括操作の対象にする"></label><span class="grip">⠿</span><strong>Compensation</strong><span class="widget-sample">${esc(source?.name ?? "サンプルなし")}</span><button type="button" data-remove-widget="${esc(widget.id)}" title="Compensationウィジェットを削除" aria-label="Compensationウィジェットを削除">×</button></header><div class="compensation-widget-content"><div class="comp-widget-controls"><label>編集中<select data-comp-source="${esc(widget.id)}" ${sourceOptions.length ? "" : "disabled"}>${selectOptions(sourceOptions, selectedSource)}</select></label><label class="check"><input type="checkbox" data-comp-enabled="${esc(widget.id)}" ${comp?.enabled ? "checked" : ""}> 補正 ON</label><span class="comp-draft-status ${draftPending ? "pending" : ""}" data-comp-draft-status="${esc(widget.id)}">${draftPending ? "未適用" : "適用済み"}</span></div>${channelVisibility}${matrix}<fieldset class="comp-target-list"><legend>適用先（チェックしたサンプル）</legend><div>${destinations || '<p class="hint">サンプルがありません。</p>'}</div></fieldset><button type="button" class="primary" data-apply-comp-widget="${esc(widget.id)}" ${source && comp?.channels.length ? "" : "disabled"}>チェックしたサンプルへ適用</button>${divaPresetControl}</div><div class="resize-grip" data-resize="widget:${esc(widget.id)}" title="サイズを変更">◢</div></section>`;
 }
 function statisticsWidget(widget: StatisticsWidget) {
   const targetSampleId = statisticsWidgetSampleId(widget);
@@ -719,31 +829,53 @@ function editStatisticsWidget(widget: StatisticsWidget) {
   dialog.showModal();
 }
 function tree() {
-  return project.samples
+  const breadcrumb = sampleId ? `<div class="population-breadcrumb" title="選択中の集団">${esc(["All events", ...pathFor(project, project.selectedGate || "root", sampleId)].join(" / "))}</div>` : "";
+  return breadcrumb + project.samples
     .map((s) => {
       const gateVisible = (g: Gate) =>
         gateFilter === "all" || gateScope(g) === gateFilter;
-      const nodes = (id: string, depth: number): string => {
+      const gateMatches = (g: Gate) => gateVisible(g) &&
+        (!populationSearch || g.name.toLocaleLowerCase().includes(populationSearch.toLocaleLowerCase()));
+      const hasVisibleDescendant = (id: string, seen = new Set<string>()): boolean => {
+        if (seen.has(id)) return false;
+        const nextSeen = new Set(seen).add(id);
+        return project.gates.some((child) =>
+          gateAppliesToSample(child, s.id) && child.parent === id &&
+          (gateMatches(child) || hasVisibleDescendant(child.id, nextSeen)),
+        );
+      };
+      const nodes = (id: string, depth: number, ancestors = new Set<string>()): string => {
+        if (ancestors.has(id)) return "";
+        const nextAncestors = new Set(ancestors).add(id);
         const g = project.gates.find(
             (g) => g.id === id && gateAppliesToSample(g, s.id),
           ),
           stat = data.stats[s.id]?.find((st) => st.id === id);
         return (
-          `<div class="population ${sampleId === s.id && project.selectedGate === id ? "selected" : ""}" draggable="true" data-pop="${esc(id)}" data-sample="${esc(s.id)}" style="padding-left:${12 + depth * 16}px"><span>◇ ${esc(g?.name ?? "All events")}</span>${g && gateScope(g) === "global" ? '<i class="scope-badge">全体</i>' : ""}<small>${pending ? "…" : fmt(stat?.count)}</small></div>` +
+          `<div class="population ${g && !gateMatches(g) ? "context-only" : ""} ${sampleId === s.id && project.selectedGate === id ? "selected" : ""}" draggable="true" data-pop="${esc(id)}" data-sample="${esc(s.id)}" style="padding-left:${12 + depth * 16}px" title="${esc(["All events", ...(g ? pathFor(project, g.id, s.id) : [])].join(" / "))}"><span>◇ ${esc(g?.name ?? "All events")}</span>${g ? `<i class="scope-badge">${gateScope(g) === "global" ? "全体" : "個別"}</i>` : ""}<small>${pending ? "…" : fmt(stat?.count)}</small></div>` +
           project.gates
             .filter(
               (g) =>
-                gateAppliesToSample(g, s.id) &&
-                g.parent === id &&
-                gateVisible(g),
-            )
-            .map((g) => nodes(g.id, depth + 1))
+                  gateAppliesToSample(g, s.id) &&
+                  g.parent === id &&
+                  (gateMatches(g) || hasVisibleDescendant(g.id)),
+              )
+              .map((g) => nodes(g.id, depth + 1, nextAncestors))
             .join("")
         );
       };
-      return `<div class="sample-group"><button class="sample ${s.id === sampleId ? "selected" : ""}" type="button" draggable="true" data-sample="${esc(s.id)}" title="クリックで選択、↑↓キーで移動、ドラッグで並び替え"><span class="sample-drag-handle" aria-hidden="true">⠿</span> ${esc(s.name)}<small>${fmt(s.events)} events · ${s.compensation.enabled ? "Comp ON" : "Comp OFF"}</small></button>${s.id === sampleId ? nodes("root", 0) : ""}</div>`;
+      return `<div class="sample-group" data-sample-name="${esc(s.name)}"><button class="sample ${s.id === sampleId ? "selected" : ""}" type="button" draggable="true" data-sample="${esc(s.id)}" title="${esc(s.name)} · クリックで選択、↑↓キーで移動、ドラッグで並び替え"><span class="sample-drag-handle" aria-hidden="true">⠿</span> ${esc(s.name)}<small>${fmt(s.events)} events · ${s.compensation.enabled ? "Comp ON" : "Comp OFF"}</small></button>${s.id === sampleId ? nodes("root", 0) : ""}</div>`;
     })
     .join("");
+}
+function refreshPopulationTree() {
+  const element = document.querySelector<HTMLElement>("#tree");
+  if (!element) return;
+  element.innerHTML = tree();
+  decorateSampleOrder();
+  element.querySelectorAll<HTMLElement>(".sample-group").forEach((group) => {
+    group.hidden = !group.dataset.sampleName?.toLocaleLowerCase().includes(sampleSearch.toLocaleLowerCase());
+  });
 }
 function selectOptions(
   items: { value: string; label: string }[],
@@ -845,9 +977,10 @@ function render() {
   const printPages = sheet().printPages ?? [];
   const boardWidth = Math.max(1120, ...sheet().plots.map((c) => c.left + c.width + 30), ...widgets.map((w) => w.left + w.width + 30), ...printPages.map((page) => page.left + printPageSize(page).width + 30));
   const boardHeight = Math.max(710, ...sheet().plots.map((c) => c.top + c.height + 40), ...widgets.map((w) => w.top + w.height + 40), ...printPages.map((page) => page.top + printPageSize(page).height + 40));
-  const gridColumns = Math.min(8, Math.max(1, Math.ceil(Math.sqrt(Math.max(1, sheet().plots.length)))));
-  const gridRows = Math.min(20, Math.max(1, Math.ceil(Math.max(1, sheet().plots.length) / gridColumns)));
-  app.innerHTML = `<header><strong>FlowDesk <span>WORKSPACE</span></strong><input id="experiment" value="${esc(project.name)}" aria-label="Experiment name"><span class="spacer"></span><span>R / flowCore · 0.4.0</span></header><nav class="toolbar"><button id="import" class="primary">＋ FCS</button><button id="folder">DIVAフォルダ</button><button id="diva">DIVA XML</button><button id="demo">デモ</button><span class="divider"></span><button id="load">開く</button><button id="save">保存</button><button id="undo" ${history.length ? "" : "disabled"} title="Ctrl+Z">↶ 戻す</button><button id="redo" ${future.length ? "" : "disabled"} title="Ctrl+Y">↷ やり直す</button><span class="spacer"></span><button id="batch" title="個別ゲートの階層を他サンプルへコピー">ゲート階層コピー</button><button id="csv" title="全サンプル・全分画の統計をCSVで出力">統計 CSV</button><button id="pdf">Worksheet PDF</button><button id="report">全サンプル report</button><button id="template" title="現在のワークシートとゲート定義だけをテンプレート保存">テンプレート</button><button id="toggle-properties" title="軸・補正・分画の詳細設定">解析設定</button></nav><div class="shell"><aside class="browser"><h2>Samples & populations <span>${project.samples.length}</span></h2><div id="tree">${tree()}</div><div class="hint tree-help">集団をダブルクリック、またはワークシートへドラッグしてプロットを追加。Globalは1サンプル、Normalは複数サンプルを比較します。</div><button id="show-population">選択集団をプロットに追加</button></aside><main><div class="sheet-tabs">${project.worksheets!.map((s) => `<button data-sheet="${s.id}" class="${s.id === sheet().id ? "active" : ""}">${esc(s.name)} <small>${s.mode === "normal" ? "Normal" : "Global"} · ${s.plots.length}</small></button>`).join("")}<button id="new-sheet" title="ワークシートを追加">＋</button><button id="clone-sheet" title="ワークシートを複製">⧉</button></div><div class="workspace-heading"><input id="sheet-name" value="${esc(sheet().name)}" aria-label="Worksheet name"><div class="sheet-mode" aria-label="ワークシートモード"><span>Mode:</span><button type="button" data-sheet-mode="global" class="${worksheetMode() === "global" ? "active" : ""}" title="選択サンプルを全プロットへ一括適用">Global</button><button type="button" data-sheet-mode="normal" class="${worksheetMode() === "normal" ? "active" : ""}" title="サンプルごとに固定したプロットを比較">Normal</button></div><button id="add-plot" class="primary">＋ Plot</button><button id="add-print-page" title="A4の印刷範囲を追加">＋ A4ページ</button><details class="widget-add-menu"><summary title="ワークシートウィジェットを追加">＋ ウィジェット</summary><div><button id="statistics-widget-settings" type="button">Population statistics</button><button id="compensation-widget-add" type="button">Compensation調整</button></div></details><details class="worksheet-actions-menu"><summary>解析操作 ▾</summary><div><button id="standard-expansion" type="button" title="FSC/SSCの定型展開を追加">FSC / SSC 定型展開</button><button id="compensation-expansion" type="button" title="FSC-Aを横軸、選択蛍光を縦軸にしたコンペ調整用プロットを作成">Comp定型解析</button><button id="batch-plots-sheet" type="button" title="選択したプロット・ウィジェットを他サンプルへ展開" ${worksheetMode() === "normal" ? "" : "disabled"}>Normal 選択項目を展開</button></div></details><div class="grid-arrange-control"><button id="arrange" title="各プロットを最も近いグリッドに揃える">グリッド整列</button><details class="grid-arrange-menu"><summary aria-label="グリッド配置の行数と列数を選択" title="行数と列数を指定">▾</summary><form id="grid-arrange-form"><strong>配置グリッド</strong><div class="grid-fields"><label>行<input name="rows" type="number" min="1" max="20" value="${gridRows}"></label><label>列<input name="columns" type="number" min="1" max="20" value="${gridColumns}"></label></div><label>対象<select name="scope"><option value="all">ワークシート全体</option><option value="selected">選択プロット</option></select></label><button class="primary" type="submit">この行 × 列で配置</button></form></details></div><span class="zoom-controls"><button id="zoom-out">−</button><output id="zoom-value">100%</output><button id="zoom-in">＋</button><button id="zoom-reset">1:1</button></span><span id="selection-info" class="selection-info">選択: ${selectedPlots().length}</span><span class="spacer"></span><div class="gate-tools">${[
+  const worksheetItemCount = sheet().plots.length + widgets.length;
+  const gridColumns = Math.min(8, Math.max(1, Math.ceil(Math.sqrt(Math.max(1, worksheetItemCount)))));
+  const gridRows = Math.min(20, Math.max(1, Math.ceil(Math.max(1, worksheetItemCount) / gridColumns)));
+  app.innerHTML = `<header><strong>FlowDesk <span>WORKSPACE</span></strong><input id="experiment" value="${esc(project.name)}" aria-label="Experiment name"><span class="spacer"></span><span>R / flowCore · 0.4.0</span></header><nav class="toolbar"><button id="import" class="primary">＋ FCS</button><button id="folder">DIVAフォルダ</button><button id="diva">DIVA XML</button><button id="demo">デモ</button><span class="divider"></span><button id="load">開く</button><button id="save">保存</button><button id="undo" ${history.length ? "" : "disabled"} title="Ctrl+Z">↶ 戻す</button><button id="redo" ${future.length ? "" : "disabled"} title="Ctrl+Y">↷ やり直す</button><span class="spacer"></span><button id="batch" title="個別ゲートの階層を他サンプルへコピー">ゲート階層コピー</button><button id="csv" title="全サンプル・全分画の統計をCSVで出力">統計 CSV</button><button id="pdf">Worksheet PDF</button><button id="report">全サンプル report</button><button id="template" title="現在のワークシートとゲート定義だけをテンプレート保存">テンプレート</button><button id="toggle-properties" title="軸・補正・分画の詳細設定">解析設定</button></nav><div class="shell"><aside class="browser"><h2>Samples & populations <span>${project.samples.length}</span></h2><div id="tree">${tree()}</div><div class="hint tree-help">集団をダブルクリック、またはワークシートへドラッグしてプロットを追加。Globalは1サンプル、Normalは複数サンプルを比較します。</div><button id="show-population">選択集団をプロットに追加</button></aside><main><div class="sheet-tabs">${project.worksheets!.map((s) => `<button data-sheet="${s.id}" class="${s.id === sheet().id ? "active" : ""}">${esc(s.name)} <small>${s.mode === "normal" ? "Normal" : "Global"} · ${s.plots.length}</small></button>`).join("")}<button id="new-sheet" title="ワークシートを追加">＋</button><button id="clone-sheet" title="ワークシートを複製">⧉</button></div><div class="workspace-heading"><input id="sheet-name" value="${esc(sheet().name)}" aria-label="Worksheet name"><div class="sheet-mode" aria-label="ワークシートモード"><span>Mode:</span><button type="button" data-sheet-mode="global" class="${worksheetMode() === "global" ? "active" : ""}" title="選択サンプルを全プロットへ一括適用">Global</button><button type="button" data-sheet-mode="normal" class="${worksheetMode() === "normal" ? "active" : ""}" title="サンプルごとに固定したプロットを比較">Normal</button></div><button id="add-plot" class="primary">＋ Plot</button><button id="add-print-page" title="A4の印刷範囲を追加">＋ A4ページ</button><details class="widget-add-menu"><summary title="ワークシートウィジェットを追加">＋ ウィジェット</summary><div><button id="statistics-widget-settings" type="button">Population statistics</button><button id="compensation-widget-add" type="button">Compensation調整</button></div></details><details class="worksheet-actions-menu"><summary>解析操作 ▾</summary><div><button id="standard-expansion" type="button" title="FSC/SSCの定型展開を追加">FSC / SSC 定型展開</button><button id="compensation-expansion" type="button" title="FSC-Aを横軸、選択蛍光を縦軸にしたコンペ調整用プロットを作成">Comp定型解析</button><button id="batch-plots-sheet" type="button" title="選択したプロット・ウィジェットを他サンプルへ展開" ${worksheetMode() === "normal" ? "" : "disabled"}>Normal 選択項目を展開</button></div></details><div class="grid-arrange-control"><button id="arrange" title="各プロットを最も近いグリッドに揃える">グリッド整列</button><details class="grid-arrange-menu"><summary aria-label="グリッド配置の行数と列数を選択" title="行数と列数を指定">▾</summary><form id="grid-arrange-form"><strong>配置グリッド</strong><div class="grid-fields"><label>行<input name="rows" type="number" min="1" max="20" value="${gridRows}"></label><label>列<input name="columns" type="number" min="1" max="20" value="${gridColumns}"></label></div><label>対象<select name="scope"><option value="all">ワークシート全体</option><option value="selected">選択した項目</option></select></label><button class="primary" type="submit">この行 × 列で配置</button></form></details></div><span class="zoom-controls"><button id="zoom-out">−</button><output id="zoom-value">100%</output><button id="zoom-in">＋</button><button id="zoom-reset">1:1</button></span><span id="selection-info" class="selection-info">選択: ${selectedCards.size + selectedWidgets.size}</span><span class="spacer"></span><div class="gate-tools">${[
     ["select", "選択 / 編集"],
     ["rectangle", "矩形"],
     ["polygon", "多角形"],
@@ -862,7 +995,43 @@ function render() {
     .join(
       "",
     )}</div><div class="gate-scope" aria-label="分画の適用範囲"><span>新規分画:</span><button type="button" data-gate-scope="sample" class="${gateScopeMode === "sample" ? "active" : ""}" title="選択中のサンプルだけに適用">個別適用</button><button type="button" data-gate-scope="global" class="${gateScopeMode === "global" ? "active" : ""}" title="全サンプルに適用">全体適用</button></div><div class="gate-filter" aria-label="分画表示"><span>分画:</span><button type="button" data-gate-filter="all" class="${gateFilter === "all" ? "active" : ""}">すべて</button><button type="button" data-gate-filter="global" class="${gateFilter === "global" ? "active" : ""}">Global</button><button type="button" data-gate-filter="sample" class="${gateFilter === "sample" ? "active" : ""}">個別</button></div></div><div class="viewport"><div class="board" style="width:${boardWidth}px;height:${boardHeight}px">${printPages.map(printPageMarkup).join("")}${sheet().plots.map(plotCard).join("")}${statisticsWidgets.map(statisticsWidget).join("")}${compensationWidgets.map(compensationWidget).join("")}${!sheet().plots.length && !widgets.length ? '<div class="empty"><h1>' + (worksheetMode() === "normal" ? "Normal sheet" : "Global worksheet") + '</h1><p>' + (worksheetMode() === "normal" ? "複数サンプルの分画プロットを並べて比較できます。" : "選択中の1サンプルを共通軸で解析します。") + '<br>左の集団をドラッグ、または「＋ Plot」で始めます。</p></div>' : ""}</div></div></main></div><footer></footer>`;
+  document.getElementById("add-print-page")!.insertAdjacentHTML("beforebegin", `<button id="toggle-print-layout" type="button" class="${printLayoutMode ? "active" : ""}" aria-pressed="${printLayoutMode}">${printLayoutMode ? "印刷枠を編集中" : "印刷枠を編集"}</button>`);
+  document.getElementById("zoom-reset")!.insertAdjacentHTML("afterend", '<button id="zoom-fit" type="button" title="ワークシートの全項目を表示">全体</button><button id="zoom-selection" type="button" title="選択した項目を画面に表示">選択</button>');
+  const toolbar = document.querySelector<HTMLElement>(".toolbar")!;
+  const group = (title: string, ids: string[], before: HTMLElement) => {
+    const menu = document.createElement("details");
+    menu.className = "toolbar-menu";
+    menu.innerHTML = `<summary>${title} ▾</summary><div></div>`;
+    for (const id of ids) {
+      const button = document.getElementById(id);
+      if (button) menu.querySelector("div")!.append(button);
+    }
+    menu.addEventListener("click", (event) => {
+      if ((event.target as Element).closest("button")) menu.open = false;
+    });
+    toolbar.insertBefore(menu, before);
+    return menu;
+  };
+  const files = group("ファイル", ["folder", "diva", "load", "template", "demo"], document.getElementById("undo")!);
+  files.querySelector("div")!.insertAdjacentHTML("afterbegin", '<button id="save-from-menu" type="button">プロジェクトを保存…</button>');
+  document.getElementById("template")!.textContent = "テンプレートを保存…";
+  files.querySelector("div")!.insertAdjacentHTML("beforeend", '<button id="apply-template" type="button">テンプレートを適用…</button>');
+  group("出力", ["csv", "pdf", "report"], document.getElementById("toggle-properties")!);
   document.querySelector<HTMLElement>(".browser h2")?.insertAdjacentHTML("afterend", `<label class="sample-sort-control">並び順 <select id="sample-sort" aria-label="サンプルの並び順">${selectOptions([{ value: "import", label: "取り込み順" }, { value: "name", label: "名前順" }, { value: "manual", label: "手動" }], project.sampleSort ?? "import")}</select></label>`);
+  document.querySelector<HTMLElement>(".sample-sort-control")?.insertAdjacentHTML("afterend", `<input id="sample-search" class="sample-search" type="search" value="${esc(sampleSearch)}" placeholder="サンプル名を検索" aria-label="サンプル名を検索">`);
+  document.querySelector<HTMLElement>("#sample-search")?.insertAdjacentHTML("afterend", `<input id="population-search" class="sample-search" type="search" value="${esc(populationSearch)}" placeholder="分画名を検索" aria-label="分画名を検索">`);
+  const filterSamples = () => document.querySelectorAll<HTMLElement>(".sample-group").forEach((group) => {
+    group.hidden = !group.dataset.sampleName?.toLocaleLowerCase().includes(sampleSearch.toLocaleLowerCase());
+  });
+  document.querySelector<HTMLInputElement>("#sample-search")!.oninput = (event) => {
+    sampleSearch = (event.target as HTMLInputElement).value.trim();
+    filterSamples();
+  };
+  document.querySelector<HTMLInputElement>("#population-search")!.oninput = (event) => {
+    populationSearch = (event.target as HTMLInputElement).value.trim();
+    refreshPopulationTree();
+  };
+  filterSamples();
   decorateSampleOrder();
   document.querySelector<HTMLElement>(".toolbar")?.insertAdjacentHTML(
     "beforeend",
@@ -871,10 +1040,11 @@ function render() {
   updateSidebarVisibility();
   document.querySelector<HTMLElement>("#selection-info")?.insertAdjacentHTML(
     "beforebegin",
-    '<button id="select-all-plots" class="workspace-batch-control" type="button" title="ワークシートの全プロットを選択">全プロット選択</button><button id="batch-size" class="workspace-batch-control" type="button" title="選択プロットの幅と高さを統一">サイズ統一</button><details id="align-items-menu" class="align-items-menu"><summary aria-disabled="true" title="位置を揃えるには2個以上を選択してください">位置揃え ▾</summary><div role="group" aria-label="選択項目の位置揃え"><button type="button" data-align-items="left" disabled>左揃え</button><button type="button" data-align-items="center-x" disabled>横中央</button><button type="button" data-align-items="right" disabled>右揃え</button><button type="button" data-align-items="top" disabled>上揃え</button><button type="button" data-align-items="center-y" disabled>縦中央</button><button type="button" data-align-items="bottom" disabled>下揃え</button></div></details>',
+    '<button id="select-all-plots" class="workspace-batch-control" type="button" title="ワークシートのプロットとウィジェットを全選択">全項目選択</button><button id="batch-size" class="workspace-batch-control" type="button" title="選択プロットの幅と高さを統一">サイズ統一</button><details id="align-items-menu" class="align-items-menu"><summary aria-disabled="true" title="位置を揃えるには2個以上を選択してください">位置揃え ▾</summary><div role="group" aria-label="選択項目の位置揃え"><button type="button" data-align-items="left" disabled>左揃え</button><button type="button" data-align-items="center-x" disabled>横中央</button><button type="button" data-align-items="right" disabled>右揃え</button><button type="button" data-align-items="top" disabled>上揃え</button><button type="button" data-align-items="center-y" disabled>縦中央</button><button type="button" data-align-items="bottom" disabled>下揃え</button></div></details>',
   );
   updatePlotSelectionControls();
   const board = document.querySelector<HTMLElement>(".board")!;
+  board.classList.toggle("print-layout-mode", printLayoutMode);
   board.style.zoom = String(sheet().zoom ?? 1);
   document.querySelector<HTMLOutputElement>("#zoom-value")!.value = String(Math.round((sheet().zoom ?? 1) * 100)) + "%";
   const viewport = document.querySelector(".viewport")!;
@@ -899,7 +1069,7 @@ function decorateSampleOrder() {
         const index = project.samples.findIndex((item) => item.id === sampleButton.dataset.sample);
         const destination = index + delta;
         if (index < 0 || destination < 0 || destination >= project.samples.length) return;
-        reorderSample(sampleButton.dataset.sample!, project.samples[destination].id, delta < 0);
+        reorderSample(sampleButton.dataset.sample!, project.samples[destination].id, delta > 0);
       };
       controls.append(button);
     }
@@ -982,7 +1152,23 @@ function activate(id: string) {
   document
     .querySelectorAll<HTMLElement>("[data-card]")
     .forEach((el) => el.classList.toggle("active", el.dataset.card === id));
+  syncCompensationPlotFocus();
   refreshInspector();
+}
+function syncCompensationPlotFocus() {
+  document.querySelectorAll<HTMLInputElement>("[data-comp-matrix]").forEach((input) => input.classList.remove("comp-plot-linked"));
+  const plot = card();
+  const target = plot && cardSample(plot);
+  if (!plot || !target) return;
+  document.querySelectorAll<HTMLInputElement>("[data-comp-matrix]").forEach((input) => {
+    const widget = sheet().widgets?.find((item) => item.id === input.dataset.compMatrix);
+    if (!widget || widget.type !== "compensation" || compensationWidgetSample(widget)?.id !== target.id) return;
+    const channels = target.compensation.channels;
+    const x = channels[Number(input.dataset.row)];
+    const y = channels[Number(input.dataset.column)];
+    input.classList.toggle("comp-plot-linked", !!x && !!y &&
+      ((plot.x.channel === x && plot.y.channel === y) || (plot.x.channel === y && plot.y.channel === x)));
+  });
 }
 function chooseSample(id: string) {
   sampleId = id;
@@ -1380,21 +1566,21 @@ function batchSizeDialog() {
   });
   dialog.showModal();
 }
-function gridPlotPlacements(targets: WorksheetPlot[], rows: number, columns: number) {
-  const targetIds = new Set(targets.map((plot) => plot.id));
+function gridWorksheetPlacements(targets: (WorksheetPlot | WorksheetWidget)[], rows: number, columns: number) {
+  const targetIds = new Set(targets.map((item) => item.id));
   const occupied = [
     ...sheet().plots.filter((plot) => !targetIds.has(plot.id)),
-    ...(sheet().widgets ?? []),
+    ...(sheet().widgets ?? []).filter((widget) => !targetIds.has(widget.id)),
   ].map(({ left, top, width, height }) => ({ left, top, width, height }));
   const placements: { left: number; top: number; width: number; height: number }[] = [];
   for (let row = 0; row < rows && placements.length < targets.length; row++) {
     for (let column = 0; column < columns && placements.length < targets.length; column++) {
-      const plot = targets[placements.length];
+      const item = targets[placements.length];
       const position = {
         left: worksheetGrid.originX + column * worksheetGrid.columnStep,
         top: worksheetGrid.originY + row * worksheetGrid.rowStep,
-        width: plot.width,
-        height: plot.height,
+        width: item.width,
+        height: item.height,
       };
       const overlaps = [...occupied, ...placements].some((box) =>
         position.left < box.left + box.width && position.left + position.width > box.left &&
@@ -1404,7 +1590,7 @@ function gridPlotPlacements(targets: WorksheetPlot[], rows: number, columns: num
     }
   }
   if (placements.length !== targets.length) return null;
-  return targets.map((plot, index) => ({ plot, left: placements[index].left, top: placements[index].top }));
+  return targets.map((item, index) => ({ item, left: placements[index].left, top: placements[index].top }));
 }
 function commitGate(
   c: WorksheetPlot,
@@ -1476,8 +1662,8 @@ function commitGate(
     while (
       project.gates.some(
         (g) =>
-          (g.sampleId === s.id ||
-            (gateScopeMode === "global" && gateScope(g) === "global")) &&
+          gateAppliesToSample(g, s.id) &&
+          g.parent === d.gateId &&
           (g.name === `P${n}` || g.name.startsWith(`P${n} Q`)),
       )
     )
@@ -1492,7 +1678,9 @@ function commitGate(
       x: structuredClone(c.x),
       y: structuredClone(c.y),
       scope: gateScopeMode,
-      color: populationPalette[project.gates.length % populationPalette.length],
+      color: shape.type === "quadrant"
+        ? project.gates.find((g) => g.id === d.gateId)?.color ?? "#17699b"
+        : populationPalette[project.gates.length % populationPalette.length],
       edgeExtent: extent,
     };
     delete base.x.min;
@@ -1546,6 +1734,8 @@ function drillInto(c: WorksheetPlot, g: Gate) {
   activeCard = child.id;
   tool = "select";
   changed();
+  requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-card="${CSS.escape(child.id)}"]`)
+    ?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" }));
 }
 function parentPopulation(c: WorksheetPlot) {
   if (!c.population.length) return;
@@ -1596,9 +1786,10 @@ function renameGate(g: Gate, input: string): boolean {
     project.gates.some(
       (other) =>
         other.id !== g.id &&
-        (other.sampleId === g.sampleId ||
-          gateScope(g) === "global" ||
-          gateScope(other) === "global") &&
+        project.samples.some((candidate) =>
+          gateAppliesToSample(g, candidate.id) &&
+          gateAppliesToSample(other, candidate.id),
+        ) &&
         other.parent === g.parent &&
         other.name === name,
     )
@@ -1608,17 +1799,41 @@ function renameGate(g: Gate, input: string): boolean {
   }
   if (name === g.name) return true;
   remember();
-  const oldPath = pathFor(project, g.id, g.sampleId);
+  const oldPaths = new Map(
+    project.samples
+      .filter((candidate) => gateAppliesToSample(g, candidate.id))
+      .map((candidate) => [candidate.id, pathFor(project, g.id, candidate.id)]),
+  );
   g.name = name;
   for (const ws of project.worksheets!)
-    for (const p of ws.plots)
-      if (
-        (gateScope(g) === "global" ||
-          p.sampleId === "active" ||
-          p.sampleId === g.sampleId) &&
-        oldPath.every((v, i) => p.population[i] === v)
-      )
-        p.population[oldPath.length - 1] = name;
+    for (const p of ws.plots) {
+      const candidates = p.sampleId === "active"
+        ? [...oldPaths.values()]
+        : [oldPaths.get(p.sampleId)].filter((path): path is string[] => !!path);
+      const oldPath = candidates.find((path) => path.every((part, index) => p.population[index] === part));
+      if (oldPath?.length) p.population[oldPath.length - 1] = name;
+    }
+  for (const ws of project.worksheets ?? []) {
+    for (const widget of ws.widgets ?? []) {
+      if (!isStatisticsWidget(widget) || !widget.hiddenPopulationPaths?.length) continue;
+      const targetId = ws.mode === "global"
+        ? sampleId
+        : widget.sampleId && widget.sampleId !== "active" ? widget.sampleId : sampleId;
+      const oldPath = oldPaths.get(targetId);
+      if (!oldPath?.length) continue;
+      const renamedPrefix = [...oldPath.slice(0, -1), name];
+      widget.hiddenPopulationPaths = widget.hiddenPopulationPaths.map((key) => {
+        try {
+          const path = JSON.parse(key) as string[];
+          if (oldPath.every((part, index) => path[index] === part)) {
+            path.splice(0, oldPath.length, ...renamedPrefix);
+            return JSON.stringify(path);
+          }
+        } catch { /* Preserve legacy or malformed keys unchanged. */ }
+        return key;
+      });
+    }
+  }
   changed();
   return true;
 }
@@ -2182,6 +2397,7 @@ function wire() {
   on("diva", () => void importData("diva"));
   on("load", () => void loadProject());
   on("save", () => void saveProject());
+  on("save-from-menu", () => void saveProject());
   on("pdf", () => void exportPdf(true));
   on("report", () => void exportPdf(false));
   on("toggle-left-sidebar", () => {
@@ -2191,18 +2407,15 @@ function wire() {
   on("statistics-widget-settings", () => {
     const menu = document.querySelector<HTMLDetailsElement>(".widget-add-menu");
     if (menu) menu.open = false;
-    let widget = sheet().widgets?.find(isStatisticsWidget);
-    if (!widget) {
-      remember();
-      widget = newStatisticsWidget(
-        sheet().plots,
-        worksheetMode() === "normal" ? sampleId : "active",
-      );
-      sheet().widgets ??= [];
-      sheet().widgets!.push(widget);
-      changed(false);
-    }
-    if (widget) editStatisticsWidget(widget);
+    remember();
+    const widget = newStatisticsWidget(
+      [...sheet().plots],
+      worksheetMode() === "normal" ? sampleId : "active",
+    );
+    sheet().widgets ??= [];
+    sheet().widgets!.push(widget);
+    changed(false);
+    editStatisticsWidget(widget);
   });
   on("compensation-widget-add", addCompensationWidget);
   document.querySelectorAll<HTMLButtonElement>("[data-statistics-options]").forEach((button) => {
@@ -2235,6 +2448,7 @@ function wire() {
       if (!id) return;
       remember();
       selectedWidgets.delete(id);
+      for (const key of compensationDrafts.keys()) if (key.startsWith(`${id}\u0000`)) compensationDrafts.delete(key);
       sheet().widgets = (sheet().widgets ?? []).filter((widget) => widget.id !== id);
       changed(false);
     };
@@ -2294,6 +2508,15 @@ function wire() {
     button.onclick = () => applyDivaCompensationFromWidget(button.dataset.applyDivaComp!);
   });
   on("template", () => void saveWorksheetTemplate());
+  on("apply-template", () => void applyTemplateFromFile());
+  on("toggle-print-layout", () => {
+    printLayoutMode = !printLayoutMode;
+    document.querySelector(".board")?.classList.toggle("print-layout-mode", printLayoutMode);
+    const button = document.querySelector<HTMLButtonElement>("#toggle-print-layout")!;
+    button.textContent = printLayoutMode ? "印刷枠を編集中" : "印刷枠を編集";
+    button.classList.toggle("active", printLayoutMode);
+    button.setAttribute("aria-pressed", String(printLayoutMode));
+  });
   on("csv", () => void exportStatistics());
   on("batch", batchGates);
   on("batch-plots-sheet", () => batchWorksheetItemsToSamples());
@@ -2312,16 +2535,54 @@ function wire() {
       alignSelectedWorksheetItems(alignment);
     };
   });
+  document.querySelectorAll<HTMLInputElement>("[data-comp-matrix],[data-comp-enabled]").forEach((input) => {
+    const refreshEdited = () => {
+      if (!input.dataset.compMatrix) return;
+      const widget = sheet().widgets?.find((item) => item.id === input.dataset.compMatrix);
+      const source = widget?.type === "compensation" ? compensationWidgetSample(widget) : undefined;
+      const row = Number(input.dataset.row), column = Number(input.dataset.column);
+      const baseline = source?.compensation.values[row]?.[column];
+      input.classList.toggle("comp-edited", baseline !== undefined && Math.abs(Number(input.value) / 100 - baseline) > 1e-9);
+    };
+    refreshEdited();
+    input.oninput = () => {
+      updateCompensationDraftFromDOM(input.dataset.compMatrix ?? input.dataset.compEnabled ?? "");
+      refreshEdited();
+    };
+    input.onchange = input.oninput;
+    input.onfocus = () => {
+      if (!input.dataset.compMatrix) return;
+      document.querySelectorAll<HTMLElement>(".plot-card.comp-cell-linked").forEach((plot) => plot.classList.remove("comp-cell-linked"));
+      const widget = sheet().widgets?.find((item) => item.id === input.dataset.compMatrix);
+      const source = widget?.type === "compensation" ? compensationWidgetSample(widget) : undefined;
+      if (!source) return;
+      const first = source.compensation.channels[Number(input.dataset.row)];
+      const second = source.compensation.channels[Number(input.dataset.column)];
+      for (const plot of sheet().plots) {
+        if (cardSample(plot)?.id !== source.id) continue;
+        if ((plot.x.channel === first && plot.y.channel === second) ||
+            (plot.x.channel === second && plot.y.channel === first))
+          document.querySelector<HTMLElement>(`[data-card="${CSS.escape(plot.id)}"]`)?.classList.add("comp-cell-linked");
+      }
+    };
+    input.onblur = () => {
+      document.querySelectorAll<HTMLElement>(".plot-card.comp-cell-linked").forEach((plot) => plot.classList.remove("comp-cell-linked"));
+      syncCompensationPlotFocus();
+    };
+  });
+  syncCompensationPlotFocus();
   on("select-all-plots", () => {
-    const plots = sheet().plots;
-    const allSelected = plots.length > 0 && plots.every((plot) => selectedCards.has(plot.id));
+    const items = [...sheet().plots, ...(sheet().widgets ?? [])];
+    const allSelected = items.length > 0 && items.every((item) =>
+      isPlotItem(item) ? selectedCards.has(item.id) : selectedWidgets.has(item.id),
+    );
     selectedCards.clear();
-    if (!allSelected) plots.forEach((plot) => selectedCards.add(plot.id));
-    document.querySelectorAll<HTMLInputElement>("[data-select-card]").forEach((input) => {
-      input.checked = selectedCards.has(input.dataset.selectCard!);
-      input.closest(".plot-card")?.classList.toggle("selected-card", input.checked);
-    });
-    updatePlotSelectionControls();
+    selectedWidgets.clear();
+    if (!allSelected) for (const item of items) {
+      if (isPlotItem(item)) selectedCards.add(item.id);
+      else selectedWidgets.add(item.id);
+    }
+    syncWorksheetSelection();
   });
   on("show-population", () =>
     addPlot(pathFor(project, project.selectedGate, sampleId)),
@@ -2356,10 +2617,13 @@ function wire() {
     changed();
   });
   on("arrange", () => {
+    const selected = selectedWorksheetItems();
+    const targets = selected.length ? selected : [...sheet().plots, ...(sheet().widgets ?? [])];
+    if (!targets.length) return;
     remember();
-    sheet().plots.forEach((c) => {
-      c.left = worksheetGrid.originX + Math.round((c.left - worksheetGrid.originX) / worksheetGrid.columnStep) * worksheetGrid.columnStep;
-      c.top = worksheetGrid.originY + Math.round((c.top - worksheetGrid.originY) / worksheetGrid.rowStep) * worksheetGrid.rowStep;
+    targets.forEach((item) => {
+      item.left = worksheetGrid.originX + Math.round((item.left - worksheetGrid.originX) / worksheetGrid.columnStep) * worksheetGrid.columnStep;
+      item.top = worksheetGrid.originY + Math.round((item.top - worksheetGrid.originY) / worksheetGrid.rowStep) * worksheetGrid.rowStep;
     });
     changed(false);
   });
@@ -2368,28 +2632,48 @@ function wire() {
     const form = new FormData(event.currentTarget as HTMLFormElement);
     const rows = Math.min(20, Math.max(1, Number(form.get("rows")) || 1));
     const columns = Math.min(20, Math.max(1, Number(form.get("columns")) || 1));
+    const allItems = [...sheet().plots, ...(sheet().widgets ?? [])];
     const targets = String(form.get("scope")) === "selected"
-      ? sheet().plots.filter((plot) => selectedCards.has(plot.id))
-      : sheet().plots;
+      ? selectedWorksheetItems()
+      : allItems;
     if (!targets.length) {
       message("配置するプロットがありません。選択プロットを指定した場合は、先にプロットを選択してください。", true);
       return;
     }
-    const placements = gridPlotPlacements(targets, rows, columns);
+    const placements = gridWorksheetPlacements(targets, rows, columns);
     if (!placements) {
       message(`この${rows}行 × ${columns}列では配置できません。行数または列数を増やしてください。`, true);
       return;
     }
     remember();
-    placements.forEach(({ plot, left, top }) => { plot.left = left; plot.top = top; });
+    placements.forEach(({ item, left, top }) => { item.left = left; item.top = top; });
     const menu = document.querySelector<HTMLDetailsElement>(".grid-arrange-menu");
     if (menu) menu.open = false;
     changed(false);
-    message(`${targets.length}個のプロットを${rows}行 × ${columns}列のグリッドに配置しました。`);
+    message(`${targets.length}個の項目を${rows}行 × ${columns}列のグリッドに配置しました。`);
   });
   on("zoom-out", () => { remember(); sheet().zoom = Math.max(0.5, +((sheet().zoom ?? 1) - 0.1).toFixed(2)); render(); });
   on("zoom-in", () => { remember(); sheet().zoom = Math.min(2, +((sheet().zoom ?? 1) + 0.1).toFixed(2)); render(); });
   on("zoom-reset", () => { remember(); sheet().zoom = 1; render(); });
+  const zoomToItems = (selectedOnly: boolean) => {
+    const items = selectedOnly ? selectedWorksheetItems() : [...sheet().plots, ...(sheet().widgets ?? [])];
+    if (!items.length) { message("表示する項目がありません。", true); return; }
+    const viewport = document.querySelector<HTMLElement>(".viewport")!;
+    const left = Math.max(0, Math.min(...items.map((item) => item.left)) - 24);
+    const top = Math.max(0, Math.min(...items.map((item) => item.top)) - 24);
+    const right = Math.max(...items.map((item) => item.left + item.width)) + 24;
+    const bottom = Math.max(...items.map((item) => item.top + item.height)) + 24;
+    const scale = Math.max(.5, Math.min(2, (viewport.clientWidth - 32) / (right - left), (viewport.clientHeight - 32) / (bottom - top)));
+    sheet().zoom = Math.round(scale * 100) / 100;
+    render();
+    requestAnimationFrame(() => {
+      const next = document.querySelector<HTMLElement>(".viewport")!;
+      next.scrollLeft = left * scale;
+      next.scrollTop = top * scale;
+    });
+  };
+  on("zoom-fit", () => zoomToItems(false));
+  on("zoom-selection", () => zoomToItems(true));
   on("toggle-properties", () => {
     const prior = document.querySelector<HTMLDialogElement>("#properties-dialog");
     if (prior) { prior.close(); return; }
@@ -2483,8 +2767,7 @@ function wire() {
               (button as HTMLElement).dataset.gateFilter === gateFilter,
             ),
           );
-        document.querySelector("#tree")!.innerHTML = tree();
-        decorateSampleOrder();
+        refreshPopulationTree();
       }),
   );
   document.querySelectorAll<HTMLInputElement>("[data-select-card]").forEach(
@@ -2519,6 +2802,8 @@ function wire() {
     if (el.dataset.pop !== undefined) {
       if (id !== sampleId) chooseSample(id);
       project.selectedGate = el.dataset.pop;
+      const breadcrumb = document.querySelector<HTMLElement>(".population-breadcrumb");
+      if (breadcrumb) breadcrumb.textContent = ["All events", ...pathFor(project, project.selectedGate, id)].join(" / ");
       selectedGate =
         project.selectedGate === "root" ? "" : project.selectedGate;
       document
@@ -2642,7 +2927,8 @@ function wire() {
       const source = sample(v.sampleId);
       if (Array.isArray(v.path) && source) {
         const b = board.getBoundingClientRect();
-        addPlot(v.path, source.id, [e.clientX - b.left, e.clientY - b.top]);
+        const zoom = sheet().zoom ?? 1;
+        addPlot(v.path, source.id, [(e.clientX - b.left) / zoom, (e.clientY - b.top) / zoom]);
         message(`${source.name} · ${v.path.length ? v.path.join(" / ") : "All events"} を配置しました。`);
       }
     } catch {}
@@ -2656,14 +2942,25 @@ function wire() {
       // tears down the canvas before its own pointer handlers can finish.
       if ((!additive || tool !== "select") && activeCard !== id) activate(id);
     });
+    document.querySelectorAll<HTMLInputElement>("[data-select-widget]").forEach((input) => {
+      input.checked = selectedWidgets.has(input.dataset.selectWidget!);
+      input.closest(".statistics-widget,.compensation-widget")?.classList.toggle("selected-widget", input.checked);
+    });
     el.addEventListener("click", (event) => {
       const ev = event as MouseEvent;
       const target = ev.target as Element;
-      if (!(ev.shiftKey || ev.ctrlKey || ev.metaKey) || tool !== "select" ||
+      if (tool !== "select" ||
           target.closest("button,input,select,textarea,label,a,[data-axis-label],[data-axis-details]")) return;
       const id = el.dataset.card!;
-      if (selectedCards.has(id)) selectedCards.delete(id);
-      else selectedCards.add(id);
+      const additive = ev.shiftKey || ev.ctrlKey || ev.metaKey;
+      if (additive) {
+        if (selectedCards.has(id)) selectedCards.delete(id);
+        else selectedCards.add(id);
+      } else if (!selectedCards.has(id) || selectedCards.size + selectedWidgets.size > 1) {
+        selectedCards.clear();
+        selectedWidgets.clear();
+        selectedCards.add(id);
+      }
       if (activeCard !== id) activate(id);
       syncWorksheetSelection();
       ev.preventDefault();
@@ -2857,6 +3154,7 @@ function wire() {
     .querySelectorAll<HTMLElement>("[data-move],[data-resize]")
     .forEach((el) => {
       el.onpointerdown = (e) => {
+        if (e.button !== 0) return;
         const key = el.dataset.move ?? el.dataset.resize ?? "";
         const isWidget = key.startsWith("widget:");
         if ((e.target as Element).closest("button,select,input,label,textarea,a") || (focusedCard && !isWidget))
@@ -2870,7 +3168,8 @@ function wire() {
         if (!item || !element) return;
         const isCompWidget = "type" in item && item.type === "compensation";
         const isResize = !!el.dataset.resize;
-        if (!isResize) {
+        const additive = e.shiftKey || e.ctrlKey || e.metaKey;
+        if (!isResize && !additive) {
           const selected = isWidget ? selectedWidgets.has(id) : selectedCards.has(id);
           if (!selected) {
             selectedCards.clear();
@@ -3014,19 +3313,25 @@ function ensureCompensationWidget(visibleChannels?: string[], sourceSampleId?: s
   return widget;
 }
 function addCompensationWidget() {
-  const existing = sheet().widgets?.find((widget) => widget.type === "compensation");
-  if (existing) {
-    ensureCompensationWidget();
-    message("このワークシートにはCompensationウィジェットがあります。");
-    return;
-  }
   if (!project.samples.length) {
     message("先にFCSサンプルを読み込んでください。", true);
     return;
   }
   remember();
-  ensureCompensationWidget();
+  const source = card() ? cardSample(card()!) : sample();
+  const widget = newCompensationWidget(
+    sheet().plots,
+    sheet().widgets ?? [],
+    worksheetMode() === "global" ? "active" : source?.id ?? sampleId,
+  );
+  const widgets = sheet().widgets ?? (sheet().widgets = []);
+  widgets.push(widget);
   changed(false);
+  const viewport = document.querySelector<HTMLElement>(".viewport");
+  if (viewport) {
+    viewport.scrollLeft = Math.max(0, widget.left - 30);
+    viewport.scrollTop = Math.max(0, widget.top - 30);
+  }
 }
 function selectedCompensationTargets(widgetId: string) {
   const ids = [...document.querySelectorAll<HTMLInputElement>(`[data-comp-target="${CSS.escape(widgetId)}"]:checked`)]
@@ -3034,20 +3339,39 @@ function selectedCompensationTargets(widgetId: string) {
     .filter((id): id is string => !!id);
   return project.samples.filter((item) => ids.includes(item.id));
 }
+function updateCompensationDraftFromDOM(widgetId: string) {
+  const widget = sheet().widgets?.find((item): item is CompensationWidget => item.id === widgetId && item.type === "compensation");
+  const source = widget && compensationWidgetSample(widget);
+  if (!widget || !source) return;
+  const draft = structuredClone(compensationDraft(widget, source));
+  const enabled = document.querySelector<HTMLInputElement>(`[data-comp-enabled="${CSS.escape(widgetId)}"]`);
+  if (enabled) draft.enabled = enabled.checked;
+  for (const input of document.querySelectorAll<HTMLInputElement>(`[data-comp-matrix="${CSS.escape(widgetId)}"]`)) {
+    const row = Number(input.dataset.row), column = Number(input.dataset.column);
+    const valueRow = draft.values[row];
+    if (Number.isInteger(row) && row >= 0 && valueRow && Number.isInteger(column) && column >= 0 && column < valueRow.length)
+      valueRow[column] = input.value.trim() === "" ? Number.NaN : Number(input.value) / 100;
+  }
+  compensationDrafts.set(compensationDraftKey(widget, source), draft);
+  const status = document.querySelector<HTMLElement>(`[data-comp-draft-status="${CSS.escape(widgetId)}"]`);
+  const isPending = JSON.stringify(draft) !== JSON.stringify(source.compensation);
+  if (status) {
+    status.textContent = isPending ? "未適用" : "適用済み";
+    status.classList.toggle("pending", isPending);
+  }
+}
+
 function applyCompensationWidget(widgetId: string) {
   const widget = sheet().widgets?.find((item): item is CompensationWidget => item.id === widgetId && item.type === "compensation");
   const source = widget && compensationWidgetSample(widget);
   if (!widget || !source) return;
-  const config: Compensation = structuredClone(source.compensation);
-  config.enabled = document.querySelector<HTMLInputElement>(`[data-comp-enabled="${CSS.escape(widgetId)}"]`)?.checked ?? false;
-  for (const input of document.querySelectorAll<HTMLInputElement>(`[data-comp-matrix="${CSS.escape(widgetId)}"]`)) {
-    const row = Number(input.dataset.row), column = Number(input.dataset.column);
-    const value = Number(input.value) / 100;
-    if (!Number.isFinite(value) || !Number.isInteger(row) || row < 0 || row >= config.values.length || !Number.isInteger(column) || column < 0 || column >= (config.values[row]?.length ?? 0)) {
+  updateCompensationDraftFromDOM(widgetId);
+  const config: Compensation = structuredClone(compensationDraft(widget, source));
+  for (const valueRow of config.values) for (const value of valueRow) {
+    if (!Number.isFinite(value)) {
       message("補正行列に有限の数値を入力してください。", true);
       return;
     }
-    config.values[row][column] = value;
   }
   const targets = selectedCompensationTargets(widgetId);
   if (!targets.length) {
@@ -3061,8 +3385,10 @@ function applyCompensationWidget(widgetId: string) {
   }
   remember();
   compatible.forEach((target) => { target.compensation = structuredClone(config); });
+  if (compatible.some((target) => target.id === source.id))
+    compensationDrafts.set(compensationDraftKey(widget, source), structuredClone(config));
   changed();
-  message(`補正行列を適用しました: ${source.name}の設定 → ${compatible.map((target) => target.name).join("、")}${compatible.length !== targets.length ? "（チャンネル不足の対象は除外）" : ""}`);
+  message(`補正行列を適用しました: ${compatible.map((target) => target.name).join("、")}${compatible.length !== targets.length ? "（チャンネル不足の対象は除外）" : ""}`);
 }
 function applyDivaCompensationFromWidget(widgetId: string) {
   const selector = document.querySelector<HTMLSelectElement>(`[data-diva-comp-preset="${CSS.escape(widgetId)}"]`);
@@ -3463,7 +3789,7 @@ async function saveProject() {
       serialized = JSON.stringify(snapshot);
     await rpc("save", { path, project: snapshot });
     projectPath = path;
-    if (JSON.stringify(project) === serialized) dirty = false;
+    if (JSON.stringify(project) === serialized) { dirty = false; clearRecovery(); }
     message("プロジェクトと全ワークシートを保存しました。");
   });
 }
@@ -3474,16 +3800,73 @@ async function saveWorksheetTemplate() {
   });
   if (!path) return;
   await runOperation("ワークシートテンプレートを保存中…", async () => {
-    const template = {
-      schema: "flowdesk-worksheet-template/1",
-      name: project.name,
-      worksheet: structuredClone(sheet()),
-      // Template files contain reusable geometry and layout, never event data.
-      gateDefinitions: structuredClone(project.gates),
-    };
+    const template = createWorksheetTemplate(project, sheet(), sampleId);
     await rpc("save_template", { path, template });
     message(`ワークシートテンプレートを保存しました: ${path}`);
   });
+}
+async function applyTemplateFromFile() {
+  if (!project.samples.length) { message("先に適用先のサンプルを読み込んでください。", true); return; }
+  const path = await open({ multiple: false, filters: [{ name: "Worksheet template", extensions: ["json"] }] });
+  if (!path || Array.isArray(path)) return;
+  let template: WorksheetTemplate;
+  try {
+    template = await rpc<WorksheetTemplate>("load_template", { path });
+    if (template.schema !== "flowdesk-worksheet-template/1" || !template.worksheet ||
+        !Array.isArray(template.worksheet.plots) || !Array.isArray(template.gateDefinitions) ||
+        (template.worksheet.widgets !== undefined && !Array.isArray(template.worksheet.widgets)) ||
+        (template.sampleBindings !== undefined && !Array.isArray(template.sampleBindings)) ||
+        template.worksheet.plots.some((item) => !item || !item.x?.channel || !item.y?.channel || !Array.isArray(item.population)) ||
+        template.gateDefinitions.some((item) => !item || !item.id || !item.name || !item.parent || !item.x?.channel || !item.y?.channel))
+      throw Error("テンプレートの形式が正しくありません。");
+  } catch (error) { message(String(error), true); return; }
+  const sourceIds = templateSourceIds(template);
+  const channels = templateChannels(template);
+  const availableChannels = [...new Map(project.samples.flatMap((item) => item.channels).map((item) => [item.id, item.label])).entries()];
+  const dialog = document.createElement("dialog");
+  dialog.className = "template-dialog";
+  dialog.setAttribute("aria-label", "テンプレートの対応付け");
+  const sampleRows = sourceIds.map((id, index) => {
+    const source = template.sampleBindings?.find((item) => item.id === id);
+    const match = project.samples.find((item) => item.id === id) ??
+      project.samples.find((item) => item.name === source?.name) ?? sample();
+    return `<label>${esc(source?.name ?? id)} <small>→ 適用先</small><select data-template-sample="${index}">${selectOptions(project.samples.map((item) => ({ value: item.id, label: item.name })), match?.id ?? project.samples[0].id)}</select></label>`;
+  }).join("");
+  const channelRows = channels.map((channel, index) => {
+    const sourceLabel = template.sampleBindings?.flatMap((item) => item.channels).find((item) => item.id === channel)?.label;
+    const match = availableChannels.find(([id]) => id === channel)?.[0] ??
+      availableChannels.find(([, label]) => label === sourceLabel)?.[0] ?? "";
+    return `<label>${esc(channel)} <small>→ 検出器</small><select data-template-channel="${index}"><option value="">選択してください</option>${selectOptions(availableChannels.map(([id, label]) => ({ value: id, label: `${id}${label !== id ? ` · ${label}` : ""}` })), match)}</select></label>`;
+  }).join("");
+  dialog.innerHTML = `<form><h2>テンプレートを適用</h2><p class="hint">「${esc(template.worksheet.name)}」を新しいワークシートとして追加します。元データは含まれません。分画・軸・統計列に必要なサンプルと検出器を対応付けてください。</p><div class="template-mapping"><fieldset><legend>サンプル</legend>${sampleRows || '<p class="hint">Globalのアクティブサンプルを使います。</p>'}</fieldset><fieldset><legend>検出器</legend>${channelRows || '<p class="hint">検出器の指定はありません。</p>'}</fieldset></div><p class="template-error" role="alert"></p><div class="axis-dialog-actions"><button type="button" data-template-cancel>キャンセル</button><button type="submit" class="primary">新しいシートとして適用</button></div></form>`;
+  document.body.append(dialog);
+  const close = () => { if (dialog.open) dialog.close(); dialog.remove(); };
+  dialog.querySelector<HTMLButtonElement>("[data-template-cancel]")!.onclick = close;
+  dialog.addEventListener("cancel", (event) => { event.preventDefault(); close(); });
+  dialog.querySelector("form")!.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const sampleMap = Object.fromEntries(sourceIds.map((id, index) =>
+      [id, dialog.querySelector<HTMLSelectElement>(`[data-template-sample="${index}"]`)!.value]));
+    const channelMap = Object.fromEntries(channels.map((channel, index) =>
+      [channel, dialog.querySelector<HTMLSelectElement>(`[data-template-channel="${index}"]`)!.value]));
+    try {
+      const targetActive = template.worksheet.mode === "normal" ? sampleId : sampleMap[sourceIds[0]] ?? sampleId;
+      const applied = applyWorksheetTemplate(project, template, sampleMap, channelMap, targetActive);
+      remember();
+      project.gates.push(...applied.gates);
+      project.worksheets!.push(applied.worksheet);
+      project.activeWorksheet = applied.worksheet.id;
+      sampleId = targetActive;
+      activeCard = applied.worksheet.plots[0]?.id ?? "";
+      selectedCards.clear(); selectedWidgets.clear();
+      close();
+      changed();
+      message(`テンプレートを適用しました: ${applied.worksheet.name} · ${applied.gates.length}分画追加`);
+    } catch (error) {
+      dialog.querySelector<HTMLElement>(".template-error")!.textContent = String(error);
+    }
+  });
+  dialog.showModal();
 }
 function reportOptionsDialog(): Promise<{
   plots: boolean;
@@ -3492,7 +3875,7 @@ function reportOptionsDialog(): Promise<{
 } | null> {
   const dialog = document.createElement("dialog");
   dialog.setAttribute("aria-label", "全サンプルPDFの出力内容");
-  dialog.innerHTML = `<form><h2>全サンプルPDFの出力内容</h2><p class="hint">ワークシートのA4印刷枠を、各サンプルに同じ向き・位置で適用します。ワークシート上の統計ウィジェットは各サンプルページへ印刷します。</p><label class="check"><input name="plots" type="checkbox" checked> プロット</label><label class="check"><input name="statistics" type="checkbox" checked> 詳細な集団統計ページ</label><label class="check"><input name="compensation" type="checkbox" checked> Compensation / spillover 行列</label><div class="axis-dialog-actions"><button type="button" data-cancel>キャンセル</button><button class="primary" type="submit">印刷プレビューへ</button></div></form>`;
+  dialog.innerHTML = `<form><h2>全サンプルPDFの出力内容</h2><p class="hint">ワークシートのA4印刷枠を各サンプルに適用します。配置済みの統計・補償ウィジェットは各サンプルページへ印刷し、チェック項目で詳細付録を追加します。</p><label class="check"><input name="plots" type="checkbox" checked> プロット</label><label class="check"><input name="statistics" type="checkbox" checked> 詳細な集団統計ページ</label><label class="check"><input name="compensation" type="checkbox" checked> Compensation / spillover 行列</label><div class="axis-dialog-actions"><button type="button" data-cancel>キャンセル</button><button class="primary" type="submit">印刷プレビューへ</button></div></form>`;
   document.body.append(dialog);
   return new Promise((resolve) => {
     const close = (value: { plots: boolean; statistics: boolean; compensation: boolean } | null) => {
@@ -3521,8 +3904,32 @@ function reportOptionsDialog(): Promise<{
   });
 }
 type PdfOptions = { plots: boolean; statistics: boolean; compensation: boolean };
+type PreparedPdf = { previewId: string; path: string; result: { outside?: number; pages?: number; missingPopulations?: { sample: string; population: string }[] } };
+function exactPdfPreviewDialog(prepared: PreparedPdf, worksheet: boolean): Promise<boolean> {
+  const dialog = document.createElement("dialog");
+  dialog.className = "print-preview-dialog exact-pdf-dialog";
+  dialog.setAttribute("aria-label", "生成済みPDFの印刷プレビュー");
+  const result = prepared.result;
+  const missing = result.missingPopulations ?? [];
+  const notice = [
+    `${result.pages ?? "?"}ページ`,
+    result.outside ? `印刷枠外 ${result.outside}項目` : "",
+    missing.length ? `分画なし ${missing.length}件: ${missing.slice(0, 3).map((item) => `${item.sample} / ${item.population}`).join("、")}` : "",
+  ].filter(Boolean).join(" · ");
+  const url = convertFileSrc(prepared.path);
+  dialog.innerHTML = `<div class="print-preview-heading"><div><h2>印刷プレビュー</h2><p class="hint">${worksheet ? "ワークシート" : "全サンプル report"} · ${esc(notice)}</p></div><button type="button" data-preview-close aria-label="閉じる">×</button></div><iframe class="exact-pdf-frame" src="${esc(url)}" title="保存するPDFの実際の内容"></iframe><p class="print-preview-note">ここに表示している生成済みPDFと同じ内容を保存します。ページ移動・拡大縮小はPDFビューア内で操作できます。</p><div class="axis-dialog-actions"><button type="button" data-preview-cancel>キャンセル</button><button type="button" class="primary" data-preview-save>このPDFを保存…</button></div>`;
+  document.body.append(dialog);
+  return new Promise((resolve) => {
+    const finish = (accepted: boolean) => { if (dialog.open) dialog.close(); dialog.remove(); resolve(accepted); };
+    dialog.querySelector<HTMLButtonElement>("[data-preview-close]")!.onclick = () => finish(false);
+    dialog.querySelector<HTMLButtonElement>("[data-preview-cancel]")!.onclick = () => finish(false);
+    dialog.querySelector<HTMLButtonElement>("[data-preview-save]")!.onclick = () => finish(true);
+    dialog.addEventListener("cancel", (event) => { event.preventDefault(); finish(false); });
+    dialog.showModal();
+  });
+}
 type PreviewElement = {
-  kind: "plot" | "statistics" | "detail";
+  kind: "plot" | "statistics" | "compensation" | "detail";
   id: string;
   title: string;
   detail: string;
@@ -3532,6 +3939,8 @@ type PreviewElement = {
   height: number;
   sampleId: string;
   sourcePlotId?: string;
+  sourceWidgetId?: string;
+  missingPopulationPath?: string;
   columns?: string[];
   rows?: { label: string; values: string[] }[];
 };
@@ -3540,19 +3949,26 @@ function printPreviewDialog(worksheet: boolean, options: PdfOptions): Promise<bo
     ? sheet().printPages!
     : [{ id: "default", left: 0, top: 0, orientation: "landscape" as const, scale: 1 }];
   const cards = worksheet || options.plots ? sheet().plots : [];
-  const widgets = (sheet().widgets ?? []).filter(isStatisticsWidget);
+  const widgets = sheet().widgets ?? [];
   const pages: { sampleName: string; page: PrintPage; elements: PreviewElement[] }[] = [];
-  const widthOf = (item: PreviewElement) => item.width || (item.kind === "statistics" ? 640 : 344);
-  const heightOf = (item: PreviewElement) => item.height || (item.kind === "statistics" ? 340 : 314);
+  const widthOf = (item: PreviewElement) => item.width || (item.kind === "statistics" || item.kind === "compensation" ? 640 : 344);
+  const heightOf = (item: PreviewElement) => item.height || (item.kind === "compensation" ? 360 : item.kind === "statistics" ? 340 : 314);
   const cardFor = (card: WorksheetPlot, targetSample: Sample): PreviewElement => ({
     kind: "plot", id: `${targetSample.id}/${card.id}`, sourcePlotId: card.id,
-    title: `${card.x.channel}  ×  ${oneDimensional(card) ? "Count" : card.y.channel}`,
+    title: resolveGate(project, card.population, targetSample.id) === undefined
+      ? `分画なし · ${card.x.channel} × ${oneDimensional(card) ? "Count" : card.y.channel}`
+      : `${card.x.channel}  ×  ${oneDimensional(card) ? "Count" : card.y.channel}`,
     detail: `${card.mode} · ${card.population.length ? card.population.join(" / ") : "All events"}`,
     left: card.left, top: card.top, width: card.width, height: card.height,
     sampleId: targetSample.id,
+    ...(resolveGate(project, card.population, targetSample.id) === undefined
+      ? { missingPopulationPath: card.population.length ? card.population.join(" / ") : "All events" }
+      : {}),
   });
-  const widgetFor = (widget: StatisticsWidget, targetSample: Sample): PreviewElement => ({
-    kind: "statistics", id: `${targetSample.id}/${widget.id}`, title: "Population statistics",
+  const widgetFor = (widget: WorksheetWidget, targetSample: Sample): PreviewElement => ({
+    kind: isStatisticsWidget(widget) ? "statistics" : "compensation",
+    id: `${targetSample.id}/${widget.id}`, sourceWidgetId: widget.id,
+    title: isStatisticsWidget(widget) ? "Population statistics" : "Compensation",
     detail: targetSample.name, left: widget.left, top: widget.top,
     width: widget.width, height: widget.height, sampleId: targetSample.id,
   });
@@ -3560,7 +3976,10 @@ function printPreviewDialog(worksheet: boolean, options: PdfOptions): Promise<bo
     const sampleCards = cards.filter((card) => card.sampleId === "active" || card.sampleId === targetSample.id);
     return [
       ...sampleCards.map((card) => cardFor(card, targetSample)),
-      ...widgets.map((widget) => widgetFor(widget, targetSample)),
+      ...widgets.filter((widget) => {
+        const binding = printableWidgetSampleId(widget);
+        return binding === "active" || binding === targetSample.id;
+      }).map((widget) => widgetFor(widget, targetSample)),
     ];
   };
   const worksheetSample = sample() ?? project.samples[0];
@@ -3569,7 +3988,10 @@ function printPreviewDialog(worksheet: boolean, options: PdfOptions): Promise<bo
         sampleName: worksheetMode() === "normal" ? "Normal worksheet" : worksheetSample.name,
         elements: [
           ...cards.map((card) => cardFor(card, project.samples.find((target) => target.id === card.sampleId) ?? worksheetSample)),
-          ...widgets.map((widget) => widgetFor(widget, project.samples.find((target) => target.id === widget.sampleId) ?? worksheetSample)),
+          ...widgets.map((widget) => {
+            const binding = printableWidgetSampleId(widget);
+            return widgetFor(widget, binding === "active" ? worksheetSample : sample(binding) ?? worksheetSample);
+          }),
         ],
       }] : []
     : project.samples.map((targetSample) => ({ sampleName: targetSample.name, elements: makeElements(targetSample) }));
@@ -3592,15 +4014,14 @@ function printPreviewDialog(worksheet: boolean, options: PdfOptions): Promise<bo
     const pageHeight = appendixPage.orientation === "portrait" ? a4Page.long : a4Page.short;
     for (const target of project.samples) {
       if (options.statistics) {
-        const stats = data.stats[target.id] ?? [];
-        const fallbackGates = project.gates.filter((gate) => gateAppliesToSample(gate, target.id));
-        const statRows = stats.length ? stats : [{ id: "root", name: "All events", count: 0, percentParent: 100, percentTotal: 100 }, ...fallbackGates.map((gate) => ({ id: gate.id, name: gate.name, count: 0, percentParent: null, percentTotal: null }))];
+        const stats = data.stats[target.id];
+        const statRows = stats?.length ? stats : stats ? [] : [{ id: "preview-pending", name: "この集計値はPDF生成時にRで再計算されます", count: null, percentParent: null, percentTotal: null }];
         for (let start = 0; start < statRows.length; start += 18) {
           const rows = statRows.slice(start, start + 18).map((row) => ({
             label: row.name,
-            values: [fmt(row.count), row.percentParent == null ? "—" : Number(row.percentParent).toFixed(2), row.percentTotal == null ? "—" : Number(row.percentTotal).toFixed(2)],
+            values: [row.count == null ? "—" : fmt(row.count), row.percentParent == null ? "—" : Number(row.percentParent).toFixed(2), row.percentTotal == null ? "—" : Number(row.percentTotal).toFixed(2)],
           }));
-          const element: PreviewElement = { kind: "detail", id: `${target.id}/stats/${start}`, title: "Population statistics", detail: target.name, left: 32, top: 40, width: pageWidth - 64, height: pageHeight - 80, sampleId: target.id, columns: ["Events", "% parent", "% total"], rows };
+          const element: PreviewElement = { kind: "detail", id: `${target.id}/stats/${start}`, title: "Population statistics", detail: stats ? target.name : `${target.name} · PDF時に再計算`, left: 32, top: 40, width: pageWidth - 64, height: pageHeight - 80, sampleId: target.id, columns: ["Events", "% parent", "% total"], rows };
           pages.push({ sampleName: `${target.name} · 集団統計`, page: appendixPage, elements: [element] });
         }
       }
@@ -3621,10 +4042,11 @@ function printPreviewDialog(worksheet: boolean, options: PdfOptions): Promise<bo
     }
   }
   const appendixPages = worksheet ? 0 : pages.length - samplePages.length * printPages.length;
+  const missingPopulationCount = samplePages.reduce((count, group) => count + group.elements.filter((item) => item.missingPopulationPath !== undefined).length, 0);
   const dialog = document.createElement("dialog");
   dialog.className = "print-preview-dialog";
   dialog.setAttribute("aria-label", worksheet ? "ワークシート印刷プレビュー" : "全サンプル印刷プレビュー");
-  dialog.innerHTML = `<div class="print-preview-heading"><div><h2>印刷プレビュー</h2><p class="hint">${worksheet ? esc(sheet().name) : `${project.samples.length}サンプル · ${esc(sheet().name)}`} · 用紙内に入るワークシート項目を表示しています</p></div><button type="button" data-preview-close aria-label="閉じる">×</button></div><div class="print-preview-toolbar"><button type="button" data-preview-prev>← 前</button><strong data-preview-page-count></strong><button type="button" data-preview-next>次 →</button><span class="spacer"></span><span data-preview-orientation></span></div><div class="print-preview-scroll"><div class="print-preview-holder"><div class="print-preview-paper"></div></div></div><p class="print-preview-note">青い枠は用紙に配置される項目の位置確認用です。印刷枠外の項目はPDFに含まれません.${appendixPages ? ` 詳細統計・補償行列を選択しているため、後ろに追加ページが約${appendixPages}ページ続きます。` : ""}</p><div class="axis-dialog-actions"><button type="button" data-preview-cancel>キャンセル</button><button type="button" class="primary" data-preview-save>PDFを保存…</button></div>`;
+  dialog.innerHTML = `<div class="print-preview-heading"><div><h2>印刷プレビュー</h2><p class="hint">${worksheet ? esc(sheet().name) : `${project.samples.length}サンプル · ${esc(sheet().name)}`} · 用紙内に入るワークシート項目を表示しています</p></div><button type="button" data-preview-close aria-label="閉じる">×</button></div><div class="print-preview-toolbar"><button type="button" data-preview-prev>← 前</button><strong data-preview-page-count></strong><button type="button" data-preview-next>次 →</button><span class="spacer"></span><span data-preview-orientation></span></div><div class="print-preview-scroll"><div class="print-preview-holder"><div class="print-preview-paper"></div></div></div><p class="print-preview-note">この画面は配置と表示項目の確認用です。プロットと統計値はPDF生成時にRで再計算するため、実PDFと描画細部が異なることがあります。印刷枠外の項目はPDFに含まれません.${missingPopulationCount ? ` 分画なし: ${missingPopulationCount}件。該当カードに要求した分画名を表示しています。` : ""}${appendixPages ? ` 詳細統計・補償行列を選択しているため、後ろに追加ページが約${appendixPages}ページ続きます。` : ""}</p><div class="axis-dialog-actions"><button type="button" data-preview-cancel>キャンセル</button><button type="button" class="primary" data-preview-save>PDFを保存…</button></div>`;
   document.body.append(dialog);
   let resolvePreview!: (result: boolean) => void;
   const previewResult = new Promise<boolean>((resolve) => { resolvePreview = resolve; });
@@ -3649,14 +4071,53 @@ function printPreviewDialog(worksheet: boolean, options: PdfOptions): Promise<bo
       const width = widthOf(item) * factor;
       const height = heightOf(item) * factor;
       if (item.kind === "statistics") {
-        const rows = (data.stats[item.sampleId] ?? []).slice(0, 5).map((row) => `<div><span>${esc(row.name)}</span><span>${fmt(row.count)}</span></div>`).join("");
-        return `<section class="preview-statistics" style="left:${left}px;top:${top}px;width:${width}px;height:${height}px"><strong>${esc(item.title)} · ${esc(item.detail)}</strong><div class="preview-statistics-rows">${rows || "Events　% Parent　% Total"}</div></section>`;
+        const widget = widgets.find((candidate) => candidate.id === item.sourceWidgetId);
+        const statsWidget = widget && isStatisticsWidget(widget) ? widget : undefined;
+        const hidden = new Set(statsWidget?.hiddenPopulationPaths ?? []);
+        const stats = data.stats[item.sampleId] ?? [];
+        const visibleStats = stats.filter((row) => !hidden.has(JSON.stringify(row.id === "root" ? [] : pathFor(project, row.id, item.sampleId))));
+        const columns = [
+          ...(statsWidget?.showEvents !== false ? ["Events"] : []),
+          ...(statsWidget?.showPercentParent !== false ? ["% Parent"] : []),
+          ...(statsWidget?.showPercentTotal !== false ? ["% Total"] : []),
+          ...(statsWidget?.mfiChannels ?? []).map((channel) => `MFI · ${channel}`),
+        ];
+        const rows = visibleStats.map((row) => {
+          const values = [
+            ...(statsWidget?.showEvents !== false ? [fmt(row.count)] : []),
+            ...(statsWidget?.showPercentParent !== false ? [fmt(row.percentParent)] : []),
+            ...(statsWidget?.showPercentTotal !== false ? [fmt(row.percentTotal)] : []),
+            ...(statsWidget?.mfiChannels ?? []).map((channel) => fmt(row.medians[channel] ?? null)),
+          ];
+          return `<div class="preview-statistics-row"><span>${esc(row.name)}</span>${values.map((value) => `<span>${value}</span>`).join("")}</div>`;
+        }).join("");
+        const content = stats.length
+          ? `<div class="preview-statistics-table"><div class="preview-statistics-row preview-statistics-head"><span>Population</span>${columns.map((column) => `<span>${esc(column)}</span>`).join("")}</div>${rows || '<div class="preview-unavailable">表示する集団はありません</div>'}</div>`
+          : '<div class="preview-unavailable">このサンプルの集計値は画面上で未計算です。PDF生成時に再計算します。</div>';
+        return `<section class="preview-statistics" style="left:${left}px;top:${top}px;width:${width}px;height:${height}px"><strong>${esc(item.title)} · ${esc(item.detail)}</strong>${content}</section>`;
+      }
+      if (item.kind === "compensation") {
+        const widget = widgets.find((candidate) => candidate.id === item.sourceWidgetId);
+        const target = sample(item.sampleId);
+        const compWidget = widget && widget.type === "compensation" ? widget : undefined;
+        const draft = compWidget && target ? compensationDrafts.get(compensationDraftKey(compWidget, target)) : undefined;
+        const draftPending = !!draft && !!target && JSON.stringify(draft) !== JSON.stringify(target.compensation);
+        const config = draftPending ? draft : target?.compensation;
+        const channels = config?.channels.filter((channel) => !widget || widget.type !== "compensation" || widget.visibleChannels === undefined || widget.visibleChannels.includes(channel)) ?? [];
+        const indices = channels.map((channel) => config?.channels.indexOf(channel) ?? -1);
+        const rows = channels.map((channel, row) => `<tr><th>${esc(channel)}</th>${indices.map((column) => `<td>${(((config?.values[indices[row]]?.[column] ?? 0) * 100)).toFixed(2)}%</td>`).join("")}</tr>`).join("");
+        const matrix = channels.length
+          ? `<div class="preview-compensation-table"><table><thead><tr><th>Detector</th>${channels.map((channel) => `<th>${esc(channel)}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>`
+          : '<div class="preview-unavailable">表示する補償チャンネルがありません</div>';
+        return `<section class="preview-compensation" style="left:${left}px;top:${top}px;width:${width}px;height:${height}px"><strong>${esc(item.title)} · ${esc(target?.name ?? item.detail)}</strong><small>${config?.enabled ? "補正 ON" : "補正 OFF"}${draftPending ? " · 未適用draft" : ""}</small>${matrix}</section>`;
       }
       if (item.kind === "detail") {
         const head = (item.columns ?? []).map((column) => `<th>${esc(column)}</th>`).join("");
         const body = (item.rows ?? []).map((row) => `<tr><th>${esc(row.label)}</th>${row.values.map((value) => `<td>${esc(value)}</td>`).join("")}</tr>`).join("");
         return `<section class="preview-detail" style="left:${left}px;top:${top}px;width:${width}px;height:${height}px"><h3>${esc(item.title)} <small>${esc(item.detail)}</small></h3><table><thead><tr><th>Population / Channel</th>${head}</tr></thead><tbody>${body}</tbody></table></section>`;
       }
+      if (item.missingPopulationPath !== undefined)
+        return `<section class="preview-plot preview-missing" style="left:${left}px;top:${top}px;width:${width}px;height:${height}px"><strong>${esc(item.title)}</strong><small>${esc(item.detail)}</small><div>このサンプルに分画がありません<br><b>${esc(item.missingPopulationPath)}</b></div></section>`;
       const plot = sheet().plots.find((candidate) => candidate.id === item.sourcePlotId);
       const source = plot && data.plots[plot.id]?.sampleId === item.sampleId
         ? document.querySelector<HTMLCanvasElement>(`[data-stage="${plot.id}"] canvas`)
@@ -3707,6 +4168,7 @@ async function loadProject() {
     future = [];
     data = { plots: {}, stats: {}, errors: {}, workerPid: data.workerPid };
     dirty = false;
+    clearRecovery();
     changed();
   });
 }
@@ -3715,27 +4177,59 @@ async function exportPdf(worksheet: boolean) {
     ? { plots: true, statistics: false, compensation: false }
     : await reportOptionsDialog();
   if (!options) return;
-  if (!(await printPreviewDialog(worksheet, options))) return;
-  const path = await save({
-    defaultPath: `${project.name}-${worksheet ? sheet().name : "report"}.pdf`,
-    filters: [{ name: "PDF", extensions: ["pdf"] }],
-  });
-  if (!path) return;
   await runOperation("PDFを生成中…", async () => {
-    const result = await rpc<{ outside?: number; pages?: number }>(worksheet ? "worksheet_pdf" : "worksheet_report_pdf", {
-      project: clone(),
-      path,
-      sampleId,
-      plots: structuredClone(sheet().plots),
-      widgets: structuredClone((sheet().widgets ?? []).filter(isStatisticsWidget)),
-      printPages: structuredClone(sheet().printPages ?? []),
-      includeWidgets: true,
-      worksheetName: sheet().name,
-      includePlots: options.plots,
-      includeStatistics: options.statistics,
-      includeCompensation: options.compensation,
+    const printableWidgets = (sheet().widgets ?? []).map((widget) => {
+      const sampleId = printableWidgetSampleId(widget);
+      if (widget.type !== "compensation") return { ...widget, sampleId };
+      const source = compensationWidgetSample(widget);
+      const draft = source && compensationDrafts.get(compensationDraftKey(widget, source));
+      const draftPending = !!source && !!draft && JSON.stringify(draft) !== JSON.stringify(source.compensation);
+      return {
+        ...widget,
+        sampleId,
+        ...(draftPending && source ? { displayCompensation: structuredClone(draft), draftSampleId: source.id } : {}),
+      };
     });
-    message(`PDFを保存しました: ${path}${result.pages ? ` · ${result.pages}ページ` : ""}${result.outside ? ` · 印刷枠外の${result.outside}項目は含まれていません` : ""}`);
+    const payload = {
+      action: worksheet ? "worksheet_pdf" : "worksheet_report_pdf",
+      project: clone(), sampleId,
+      plots: structuredClone(sheet().plots), widgets: structuredClone(printableWidgets),
+      printPages: structuredClone(sheet().printPages ?? []), includeWidgets: true,
+      worksheetName: sheet().name, includePlots: options.plots,
+      includeStatistics: options.statistics, includeCompensation: options.compensation,
+    };
+    const testBridge = (window as Window & { __FLOWDESK_TEST_BRIDGE__?: boolean }).__FLOWDESK_TEST_BRIDGE__;
+    let result: PreparedPdf["result"];
+    let path: string | null;
+    if (isTauri() && !testBridge) {
+      let prepared: PreparedPdf | undefined = await invoke<PreparedPdf>("prepare_pdf_preview", { payload });
+      try {
+        message("生成済みPDFを確認中…");
+        if (!(await exactPdfPreviewDialog(prepared, worksheet))) { message("PDF出力をキャンセルしました。"); return; }
+        path = await save({
+          defaultPath: `${project.name}-${worksheet ? sheet().name : "report"}.pdf`,
+          filters: [{ name: "PDF", extensions: ["pdf"] }],
+        });
+        if (!path) { message("PDF出力をキャンセルしました。"); return; }
+        result = await invoke<PreparedPdf["result"]>("commit_pdf_preview", { previewId: prepared.previewId, path });
+        prepared = undefined;
+      } finally {
+        if (prepared) await invoke("release_pdf_preview", { previewId: prepared.previewId });
+      }
+    } else {
+      if (!(await printPreviewDialog(worksheet, options))) { message("PDF出力をキャンセルしました。"); return; }
+      path = await save({
+        defaultPath: `${project.name}-${worksheet ? sheet().name : "report"}.pdf`,
+        filters: [{ name: "PDF", extensions: ["pdf"] }],
+      });
+      if (!path) { message("PDF出力をキャンセルしました。"); return; }
+      result = await rpc<PreparedPdf["result"]>(payload.action, { ...payload, path });
+    }
+    const missing = result.missingPopulations ?? [];
+    const missingText = missing.length
+      ? ` · 分画なし${missing.length}件（${missing.slice(0, 3).map((item) => `${item.sample}: ${item.population || "All events"}`).join("、")}${missing.length > 3 ? "…" : ""}）`
+      : "";
+    message(`PDFを保存しました: ${path}${result.pages ? ` · ${result.pages}ページ` : ""}${result.outside ? ` · 印刷枠外の${result.outside}項目は含まれていません` : ""}${missingText}`, missing.length > 0);
   });
 }
 
@@ -4085,6 +4579,7 @@ window.addEventListener("resize", () => {
 });
 render();
 if (isTauri()) {
+  void restoreRecovery();
   void rpc<Record<string, unknown>>("health")
     .then((v) => message(`flowCore ${v.flowCore} · 起動完了`))
     .catch((e) => message(String(e), true));
@@ -4098,8 +4593,10 @@ if (isTauri()) {
             : "未保存の変更があります。終了しますか？",
           { title: "FlowDesk" },
         )
-      )
+      ) {
+        writeRecovery();
         await getCurrentWindow().destroy();
+      }
     }
   });
 } else message("デスクトップアプリから起動してください。");

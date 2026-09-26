@@ -117,6 +117,7 @@ pub fn call(script: PathBuf, storage: PathBuf, mut payload: Value) -> Result<Val
         "pdf",
         "save",
         "save_template",
+        "load_template",
         "load",
     ]
     .contains(&action)

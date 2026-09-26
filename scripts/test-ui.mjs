@@ -15,7 +15,7 @@ const server = await createServer({
       transformIndexHtml(html) {
         return html.replace(
           "<head>",
-          `<head><script>window.isTauri=true;window.__TAURI_INTERNALS__={transformCallback:()=>1,metadata:{currentWindow:{label:'main'},currentWebview:{label:'main'}},invoke:async(cmd,args)=>{if(cmd==='request'){const r=await fetch('/__test_rpc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(args.payload)});const v=await r.json();if(!v.ok)throw Error(v.error);return v.data;}if(cmd==='plugin:dialog|save')return args.options.defaultPath.endsWith('.csv')?${JSON.stringify(resolve("artifacts/ui-statistics.csv"))}:args.options.defaultPath.endsWith('.svg')?${JSON.stringify(resolve("artifacts/ui-plot.svg"))}:args.options.defaultPath.endsWith('.pdf')?${JSON.stringify(resolve("artifacts/ui-worksheet.pdf"))}:args.options.defaultPath.endsWith('.flowdesk-worksheet.json')?${JSON.stringify(resolve("artifacts/ui-template.json"))}:${JSON.stringify(resolve("artifacts/ui-workspace.json"))};if(cmd==='plugin:dialog|open')return ${JSON.stringify(resolve("artifacts/ui-workspace.json"))};if(cmd==='plugin:dialog|message')return args.buttons==='OkCancel' && window.__FLOWDESK_TEST_CONFIRM__ === false ? 'Cancel' : 'Ok';if(cmd==='plugin:dialog|confirm')return window.__FLOWDESK_TEST_CONFIRM__ ?? true;return 1;}};</script>`,
+          `<head><script>window.isTauri=true;window.__FLOWDESK_TEST_BRIDGE__=true;window.__TAURI_INTERNALS__={transformCallback:()=>1,metadata:{currentWindow:{label:'main'},currentWebview:{label:'main'}},invoke:async(cmd,args)=>{if(cmd==='request'){const r=await fetch('/__test_rpc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(args.payload)});const v=await r.json();if(!v.ok)throw Error(v.error);return v.data;}if(cmd==='plugin:dialog|save')return args.options.defaultPath.endsWith('.csv')?${JSON.stringify(resolve("artifacts/ui-statistics.csv"))}:args.options.defaultPath.endsWith('.svg')?${JSON.stringify(resolve("artifacts/ui-plot.svg"))}:args.options.defaultPath.endsWith('.pdf')?${JSON.stringify(resolve("artifacts/ui-worksheet.pdf"))}:args.options.defaultPath.endsWith('.flowdesk-worksheet.json')?${JSON.stringify(resolve("artifacts/ui-template.json"))}:${JSON.stringify(resolve("artifacts/ui-workspace.json"))};if(cmd==='plugin:dialog|open')return args.options?.filters?.[0]?.name==='Worksheet template'?${JSON.stringify(resolve("artifacts/ui-template.json"))}:${JSON.stringify(resolve("artifacts/ui-workspace.json"))};if(cmd==='plugin:dialog|message')return args.buttons==='OkCancel' && window.__FLOWDESK_TEST_CONFIRM__ === false ? 'Cancel' : 'Ok';if(cmd==='plugin:dialog|confirm')return window.__FLOWDESK_TEST_CONFIRM__ ?? true;return 1;}};</script>`,
         );
       },
       configureServer(server) {
@@ -45,7 +45,7 @@ const server = await createServer({
             try {
               const payload = JSON.parse(body);
               const data = await worker.call(payload);
-              if (payload.action === "worksheet_pdf" && data.pageFiles?.length) {
+              if (["worksheet_pdf", "worksheet_report_pdf"].includes(payload.action) && data.pageFiles?.length) {
                 try {
                   if (data.pageFiles.length === 1) copyFileSync(data.pageFiles[0], payload.path);
                   else execFileSync("pdfunite", [...data.pageFiles, payload.path]);

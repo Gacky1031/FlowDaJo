@@ -2,6 +2,7 @@
 
 mod worker;
 mod pdf;
+mod preview;
 use serde_json::Value;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -60,6 +61,30 @@ async fn request(app: tauri::AppHandle, payload: Value) -> Result<Value, String>
         .map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+async fn prepare_pdf_preview(app: tauri::AppHandle, payload: Value) -> Result<Value, String> {
+    let script = if cfg!(debug_assertions) {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../r/worker.R")
+    } else {
+        app.path().resource_dir().map_err(|e| e.to_string())?.join("r/worker.R")
+    };
+    let cache = app.path().app_cache_dir().map_err(|e| e.to_string())?;
+    let storage = cache.join("frames");
+    tauri::async_runtime::spawn_blocking(move || preview::prepare(script, storage, cache, payload))
+        .await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn commit_pdf_preview(preview_id: String, path: String) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || preview::commit(&preview_id, &PathBuf::from(path)))
+        .await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn release_pdf_preview(preview_id: String) -> Result<(), String> {
+    preview::release(&preview_id)
+}
+
 fn main() {
     #[cfg(windows)]
     {
@@ -82,12 +107,13 @@ fn main() {
             .status();
     }    tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![request])
+        .invoke_handler(tauri::generate_handler![request, prepare_pdf_preview, commit_pdf_preview, release_pdf_preview])
         .build(tauri::generate_context!())
         .expect("Failed to run FlowDesk Tauri")
         .run(|_, event| {
             if matches!(event, tauri::RunEvent::Exit) {
                 worker::shutdown();
+                preview::shutdown();
             }
         });
 }

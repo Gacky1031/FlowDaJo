@@ -1,6 +1,45 @@
-# Interactive worksheet engine. A bounded session cache retains at most two samples.
+# Interactive worksheet engine. Keep several Normal-sheet samples within a byte budget.
 .sessions <- new.env(parent = emptyenv())
 .session_order <- character()
+.session_budget <- {
+  mb <- suppressWarnings(as.numeric(Sys.getenv("FLOWDESK_CACHE_MB", "512")))
+  if (!is.finite(mb) || mb < 32) mb <- 512
+  mb * 1024^2
+}
+.session_limit <- 16L
+.cache_metrics <- new.env(parent = emptyenv())
+.cache_metrics$rawReads <- 0L
+.cache_metrics$rawHits <- 0L
+.cache_metrics$compensations <- 0L
+.cache_metrics$maskBuilds <- 0L
+.cache_metrics$plotBuilds <- 0L
+.cache_metrics$evictions <- 0L
+.cache_metrics$rawSeconds <- 0
+.cache_metrics$compensationSeconds <- 0
+.cache_metrics$maskSeconds <- 0
+.cache_metrics$plotSeconds <- 0
+entry_bytes <- function(entry) {
+  if (is.null(entry)) return(0)
+  parts <- c("raw", "frame", "masks", "stats", "gates", "config")
+  sum(vapply(parts, function(key) if (is.null(entry[[key]])) 0 else as.numeric(object.size(entry[[key]])), 0)) +
+    if (is.null(entry$axes)) 0 else sum(vapply(ls(entry$axes), function(key) as.numeric(object.size(entry$axes[[key]])), 0))
+}
+session_cache_bytes <- function() sum(vapply(ls(.sessions), function(id) entry_bytes(.sessions[[id]]), 0))
+trim_sessions <- function(protect) {
+  while (length(.session_order) > 1L &&
+         (length(.session_order) > .session_limit || session_cache_bytes() > .session_budget)) {
+    victim <- .session_order[.session_order != protect][1]
+    if (is.na(victim)) break
+    rm(list = victim, envir = .sessions)
+    .session_order <<- .session_order[.session_order != victim]
+    .cache_metrics$evictions <- .cache_metrics$evictions + 1L
+  }
+}
+cache_health <- function() {
+  as.list(c(as.list(.cache_metrics), list(
+    entries = length(.session_order), bytes = session_cache_bytes(),
+    budgetBytes = .session_budget, sampleIds = as.list(.session_order))))
+}
 sample_signature <- function(s) {
   if (identical(s$kind, "demo")) return(list(s$kind, s$seed))
   if (!file.exists(s$path)) fail(paste("Source FCS is missing:", s$path))
@@ -11,26 +50,33 @@ session_frame <- function(s, storage) {
   sig <- sample_signature(s)
   entry <- .sessions[[s$id]]
   if (is.null(entry) || !identical(entry$signature, sig)) {
+    started <- proc.time()[["elapsed"]]
     entry <- list(signature = sig, raw = read_frame(s, storage), config = NULL)
+    .cache_metrics$rawReads <- .cache_metrics$rawReads + 1L
+    .cache_metrics$rawSeconds <- .cache_metrics$rawSeconds + proc.time()[["elapsed"]] - started
+  } else {
+    .cache_metrics$rawHits <- .cache_metrics$rawHits + 1L
   }
   if (is.null(entry$frame) || !identical(entry$config, s$compensation)) {
+    started <- proc.time()[["elapsed"]]
     entry$frame <- apply_compensation(entry$raw, s$compensation)
+    .cache_metrics$compensations <- .cache_metrics$compensations + 1L
+    .cache_metrics$compensationSeconds <- .cache_metrics$compensationSeconds + proc.time()[["elapsed"]] - started
     entry$config <- s$compensation
     entry$gates <- NULL; entry$masks <- NULL; entry$stats <- NULL
     entry$axes <- new.env(parent = emptyenv())
   }
+  entry$sampleId <- s$id
   .session_order <<- c(setdiff(.session_order, s$id), s$id)
-  while (length(.session_order) > 2) {
-    rm(list = .session_order[1], envir = .sessions)
-    .session_order <<- .session_order[-1]
-  }
   .sessions[[s$id]] <- entry
+  trim_sessions(s$id)
   entry
 }
 session_analysis <- function(p, s, storage) {
   entry <- session_frame(s, storage)
   gates <- Filter(function(g) gate_applies_to_sample(g, s$id), p$gates %||% list())
   if (is.null(entry$masks) || !identical(entry$gates, gates)) {
+    started <- proc.time()[["elapsed"]]
     entry$masks <- gate_masks(entry$frame, gates)
     entry$gates <- gates
     f <- entry$frame; masks <- entry$masks
@@ -41,6 +87,9 @@ session_analysis <- function(p, s, storage) {
            percentTotal=if(nrow(exprs(f))) 100*count/nrow(exprs(f)) else NULL, medians=as.list(medians))
     })
     .sessions[[s$id]] <- entry
+    .cache_metrics$maskBuilds <- .cache_metrics$maskBuilds + 1L
+    .cache_metrics$maskSeconds <- .cache_metrics$maskSeconds + proc.time()[["elapsed"]] - started
+    trim_sessions(s$id)
   }
   entry
 }
@@ -58,6 +107,7 @@ cached_axis <- function(entry, axis) {
   if (is.null(entry$axes[[key]])) {
     if (length(ls(entry$axes)) >= 20) rm(list=ls(entry$axes), envir=entry$axes)
     entry$axes[[key]] <- axis_values(entry$frame, axis)
+    trim_sessions(entry$sampleId)
   }
   entry$axes[[key]]
 }
@@ -98,6 +148,7 @@ worksheet <- function(req) {
       for(card in subset) errors[[card$id]] <<- conditionMessage(e)
     })
   }
+  if (length(.session_order)) trim_sessions(tail(.session_order, 1))
   list(plots=result,stats=stats,errors=errors,workerPid=Sys.getpid())
 }
 axis_preview <- function(req) {
@@ -188,10 +239,21 @@ density_grid <- function(x,y,xr,yr,bins=128L,smoothing=TRUE,contour_percent=10) 
 }
 
 worksheet_plot <- function(entry, card, s) {
+  started <- proc.time()[["elapsed"]]
+  on.exit({
+    .cache_metrics$plotBuilds <- .cache_metrics$plotBuilds + 1L
+    .cache_metrics$plotSeconds <- .cache_metrics$plotSeconds + proc.time()[["elapsed"]] - started
+  }, add = TRUE)
   gate_id <- resolve_population(entry$gates,card$population); pool <- which(entry$masks[[gate_id]])
   mode <- card$mode %||% "scatter"
   x <- cached_axis(entry,card$x); y <- if(mode %in% c("histogram","cdf"))rep(0,length(x))else cached_axis(entry,card$y)
   xr <- display_limits(x[pool],card$x); yr <- if(mode %in% c("histogram","cdf"))c(0,1)else display_limits(y[pool],card$y)
+  auto_range <- function(values, axis, shown_range) {
+    if(!isTRUE(axis$autoRange)) return(shown_range)
+    display_limits(values[pool],list())
+  }
+  auto_xr <- auto_range(x,card$x,xr)
+  auto_yr <- if(mode %in% c("histogram","cdf")) yr else auto_range(y,card$y,yr)
   if(!mode %in% c("scatter","histogram","cdf","density","contour","pseudocolor","zebra"))fail("Unknown plot mode")
   if(!is.null(card$bins) && (length(card$bins)!=1 || !is.finite(card$bins) || card$bins<16 || card$bins>512))fail("Bins must be between 16 and 512")
   if(!is.null(card$dotSize) && (!is.finite(card$dotSize)||card$dotSize<.5||card$dotSize>8))fail("Dot size must be between 0.5 and 8")
@@ -275,8 +337,8 @@ worksheet_plot <- function(entry, card, s) {
     point_colors[replace] <- gate$color %||% "#17699b"
     deepest_depth[replace] <- depth
   }
-  list(id=card$id,x=card$x,y=card$y,mode=mode,sampleId=s$id,sampleName=s$name,gateId=gate_id,
-       xRange=as.list(xr),yRange=as.list(yr),xTicks=axis_ticks(card$x,xr),yTicks=if(mode %in% c("histogram","cdf")) list() else axis_ticks(card$y,yr),
+   list(id=card$id,x=card$x,y=card$y,mode=mode,sampleId=s$id,sampleName=s$name,gateId=gate_id,
+        xRange=as.list(xr),yRange=as.list(yr),autoXRange=as.list(auto_xr),autoYRange=as.list(auto_yr),xTicks=axis_ticks(card$x,xr),yTicks=if(mode %in% c("histogram","cdf")) list() else axis_ticks(card$y,yr),
        points=list(),xValues=I(if(length(index)) unname(render_x[index]) else numeric()),yValues=I(if(length(index)) unname(render_y[index]) else numeric()),pointDensity=I(point_density),pointColors=I(point_colors),displayGateIds=as.list(display_ids),
        histogram=histogram,cdf=cdf,density=density,shown=if(mode %in% c("density","contour","pseudocolor","zebra","histogram","cdf")) shown_count else length(index),total=length(pool),excluded=excluded,
        dotSize=card$dotSize %||% 1.6,dotOpacity=card$dotOpacity %||% .6,color=card$color %||% "#146b8c",smoothing=card$smoothing %||% TRUE,showOutliers=card$showOutliers %||% TRUE,
@@ -402,6 +464,14 @@ draw_child_gates <- function(card,d,project,statistics=list()) {
   }
 }
 
+draw_missing_population <- function(card) {
+  plot.new(); plot.window(xlim=c(0,1),ylim=c(0,1),xaxs="i",yaxs="i")
+  rect(.03,.04,.97,.96,border="#b75a35",lwd=1.4)
+  title(main=fit_pdf_text(paste(card$x$channel %||% "X", "×", card$y$channel %||% "Y"),.9,.82))
+  text(.5,.57,"分画なし",col="#a4402a",font=2,cex=1.05)
+  text(.5,.44,fit_pdf_text(paste(unlist(card$population %||% list()),collapse=" / "),.82,.72),cex=.72)
+}
+
 statistics_population_key <- function(id, gates) {
   path <- character()
   while(!is.null(id) && id != "root") {
@@ -468,6 +538,39 @@ draw_statistics_widget <- function(widget, statistics, sample_name, gates=list()
   }
 }
 
+draw_compensation_widget <- function(widget, project, fallback_sample_id) {
+  sample_id <- widget$reportSampleId %||% widget$sampleId %||% fallback_sample_id
+  if(is.null(sample_id) || identical(sample_id,"active")) sample_id <- fallback_sample_id
+  matches <- Filter(function(s)identical(s$id,sample_id),project$samples)
+  if(!length(matches)) {
+    plot.new(); text(.5,.5,"Compensation sample unavailable"); return(invisible())
+  }
+  sample <- matches[[1]]; config <- sample$compensation
+  if(identical(widget$draftSampleId,sample$id) && !is.null(widget$displayCompensation))
+    config <- widget$displayCompensation
+  channels <- unlist(config$channels %||% list(),use.names=FALSE)
+  visible <- if(is.null(widget$visibleChannels)) channels else unlist(widget$visibleChannels,use.names=FALSE)
+  indices <- which(channels %in% visible)
+  values <- matrix_from(config$values)
+  plot.new(); plot.window(xlim=c(0,1),ylim=c(0,1),xaxs="i",yaxs="i")
+  title(main=fit_pdf_text(paste("Compensation |",sample$name),.96,.78))
+  text(.04,.92,if(isTRUE(config$enabled))"APPLIED"else"NOT APPLIED",adj=0,cex=.66,font=2)
+  if(!length(indices)) {
+    text(.5,.52,"表示する蛍光がありません",cex=.76)
+    return(invisible())
+  }
+  row_y <- seq(.78,.18,length.out=length(indices))
+  col_x <- seq(.40,.96,length.out=length(indices))
+  label_cex <- max(.38,min(.7,.72-.012*length(indices)))
+  text(.03,row_y,channels[indices],adj=0,cex=label_cex)
+  text(col_x,rep(.86,length(indices)),channels[indices],srt=45,adj=1,cex=label_cex)
+  for(i in seq_along(indices)) for(j in seq_along(indices)) {
+    x <- col_x[j]; y <- row_y[i]
+    rect(x-.035,y-.025,x+.035,y+.025,border="#d5dee5",col=if(i==j)"#edf2f6"else"white")
+    text(x,y,formatC(values[indices[i],indices[j]]*100,format="f",digits=2),cex=.58)
+  }
+}
+
 draw_statistics_pages <- function(req) {
   include_stats <- isTRUE(req$includeStatistics)
   include_comp <- isTRUE(req$includeCompensation)
@@ -508,9 +611,9 @@ export_print_pages <- function(req,data,cards,widgets) {
   pages <- req$printPages %||% list(list(left=0,top=0,orientation="landscape"))
   if(!length(pages)) pages <- list(list(left=0,top=0,orientation="landscape"))
   elements <- c(lapply(cards,function(value)list(kind="plot",value=value)),
-                lapply(widgets,function(value)list(kind="statistics",value=value)))
-  width_of <- function(item) item$value$width %||% if(identical(item$kind,"statistics"))640 else 344
-  height_of <- function(item) item$value$height %||% if(identical(item$kind,"statistics"))340 else 314
+                lapply(widgets,function(value)list(kind=if(identical(value$type,"compensation"))"compensation"else"statistics",value=value)))
+  width_of <- function(item) item$value$width %||% if(item$kind %in% c("statistics","compensation"))640 else 344
+  height_of <- function(item) item$value$height %||% if(identical(item$kind,"compensation"))360 else if(identical(item$kind,"statistics"))340 else 314
   files <- character(); success <- FALSE; printed <- character(); page_count <- 0L
   on.exit(if(!success && length(files))unlink(files),add=TRUE)
   report <- isTRUE(req$reportBySample)
@@ -553,8 +656,12 @@ export_print_pages <- function(req,data,cards,widgets) {
           else if(compact)c(2.8,3.3,1.9,.5) else c(3.2,3.8,2.5,.7))
         if(identical(item$kind,"plot")) {
           d <- data$plots[[value$id]]
-          draw_card(value,d,compact)
-          draw_child_gates(value,d,req$project,data$stats[[d$sampleId]] %||% list())
+          if(isTRUE(value$reportPopulationMissing)) draw_missing_population(value) else {
+            draw_card(value,d,compact)
+            draw_child_gates(value,d,req$project,data$stats[[d$sampleId]] %||% list())
+          }
+        } else if(identical(item$kind,"compensation")) {
+          draw_compensation_widget(value,req$project,req$sampleId)
         } else {
           stats_id <- value$sampleId
           if(is.null(stats_id)||identical(stats_id,"active"))stats_id <- req$sampleId
@@ -586,17 +693,24 @@ export_print_pages <- function(req,data,cards,widgets) {
     }
   }
   success <- TRUE
+  missing <- Filter(function(card)isTRUE(card$reportPopulationMissing),cards)
   list(path=req$path,pageFiles=as.list(files),pages=page_count,
        plots=sum(vapply(cards,function(card)card$id %in% printed,FALSE)),
-       outside=sum(!vapply(elements,function(item)item$value$id %in% printed,FALSE)))
+       outside=sum(!vapply(elements,function(item)item$value$id %in% printed,FALSE)),
+       missingPopulations=as.list(lapply(missing,function(card)list(
+         sample=card$reportSampleName %||% card$sampleId,
+         population=paste(unlist(card$population %||% list()),collapse=" / ")))))
 }
 
 export_vector <- function(req,kind=c("pdf","svg"),single=FALSE) {
   kind<-match.arg(kind); ext<-paste0("\\.",kind,"$"); if(!grepl(ext,req$path,ignore.case=TRUE)) fail(paste(toupper(kind),"output has wrong extension"))
   include_plots <- !identical(req$includePlots, FALSE)
   include_widgets <- isTRUE(req$includeWidgets) && !single
-  data<-worksheet(req); if(length(data$errors)) fail(paste(unlist(data$errors),collapse="\n"))
-  cards<-req$plots %||% list(); cards<-cards[order(vapply(cards,function(c)c$top %||% 0,0),vapply(cards,function(c)c$left %||% 0,0))]
+  cards<-req$plots %||% list()
+  analysis_req <- req
+  analysis_req$plots <- Filter(function(card)!isTRUE(card$reportPopulationMissing),cards)
+  data<-worksheet(analysis_req); if(length(data$errors)) fail(paste(unlist(data$errors),collapse="\n"))
+  cards<-cards[order(vapply(cards,function(c)c$top %||% 0,0),vapply(cards,function(c)c$left %||% 0,0))]
   if(single) cards<-cards[1]
   widgets<-if(include_widgets) req$widgets %||% list() else list()
   if(include_plots && !length(cards) && !length(widgets)) fail("Worksheet is empty")
@@ -616,12 +730,12 @@ export_vector <- function(req,kind=c("pdf","svg"),single=FALSE) {
     )) else list(list(cards=if(include_plots)cards else list(),widgets=widgets))
     groups <- Filter(function(group)length(group$cards)>0 || length(group$widgets)>0,groups)
     for(group in groups) {
-      elements <- c(lapply(group$cards,function(value)list(kind="plot",value=value)),lapply(group$widgets,function(value)list(kind="statistics",value=value)))
+      elements <- c(lapply(group$cards,function(value)list(kind="plot",value=value)),lapply(group$widgets,function(value)list(kind=if(identical(value$type,"compensation"))"compensation"else"statistics",value=value)))
       elements <- elements[order(vapply(elements,function(item)item$value$top %||% 0,0),vapply(elements,function(item)item$value$left %||% 0,0))]
       lefts<-vapply(elements,function(item)item$value$left %||% 0,0)
       tops<-vapply(elements,function(item)item$value$top %||% 0,0)
-      rights<-vapply(elements,function(item)(item$value$left %||% 0)+(item$value$width %||% if(identical(item$kind,"statistics"))640 else 344),0)
-      bottoms<-vapply(elements,function(item)(item$value$top %||% 0)+(item$value$height %||% if(identical(item$kind,"statistics"))340 else 314),0)
+      rights<-vapply(elements,function(item)(item$value$left %||% 0)+(item$value$width %||% if(item$kind %in% c("statistics","compensation"))640 else 344),0)
+      bottoms<-vapply(elements,function(item)(item$value$top %||% 0)+(item$value$height %||% if(identical(item$kind,"compensation"))360 else if(identical(item$kind,"statistics"))340 else 314),0)
       min_left<-min(lefts);min_top<-min(tops)
       content_w<-max(rights)-min_left;content_h<-max(bottoms)-min_top
       scale<-min(page_w/(content_w+140),page_h/(content_h+110))
@@ -639,7 +753,9 @@ export_vector <- function(req,kind=c("pdf","svg"),single=FALSE) {
           d<-data$plots[[element$id]]
           draw_card(element,d,compact)
           draw_child_gates(element,d,req$project,data$stats[[d$sampleId]] %||% list())
-        } else {
+         } else if(identical(item$kind,"compensation")) {
+           draw_compensation_widget(element,req$project,req$sampleId)
+         } else {
           stats_id <- element$reportSampleId %||% element$sampleId
           if(is.null(stats_id)||identical(stats_id,"active")) stats_id<-req$sampleId
           sample_match<-Filter(function(s)identical(s$id,stats_id),req$project$samples)
@@ -665,15 +781,9 @@ dispatch <- function(req) {
     if(!length(req$project$samples))fail("No samples are available for the report")
     sample_ids<-vapply(req$project$samples,function(s)s$id,"")
     if(is.null(req$sampleId)||!req$sampleId%in%sample_ids)req$sampleId<-sample_ids[1]
-    report_population <- function(path,sample_id) {
+    report_population_exists <- function(path,sample_id) {
       applicable<-Filter(function(g)gate_applies_to_sample(g,sample_id),req$project$gates %||% list())
-      path<-path %||% list()
-      while(length(path)) {
-        valid<-tryCatch({resolve_population(applicable,path);TRUE},error=function(e)FALSE)
-        if(valid)break
-        path<-path[-length(path)]
-      }
-      path
+      tryCatch({resolve_population(applicable,path %||% list());TRUE},error=function(e)FALSE)
     }
     for(s in req$project$samples) for(template in templates) {
       card<-template
@@ -681,22 +791,30 @@ dispatch <- function(req) {
         card$id<-paste0(s$id,"/",card$id)
         card$sampleId<-s$id
         card$reportSampleId<-s$id
-        card$population<-report_population(card$population,s$id)
+        card$reportSampleName<-s$name
+        card$reportPopulationMissing<-!report_population_exists(card$population,s$id)
         cards[[length(cards)+1]]<-card
       }
     }
     for(template in templates) if(!is.null(template$sampleId)&&!identical(template$sampleId,"active")) {
       card<-template
       card$reportSampleId<-card$sampleId
-      card$population<-report_population(card$population,card$sampleId)
+      source <- Filter(function(s)identical(s$id,card$sampleId),req$project$samples)
+      card$reportSampleName<-if(length(source))source[[1]]$name else card$sampleId
+      card$reportPopulationMissing<-!report_population_exists(card$population,card$sampleId)
       cards[[length(cards)+1]]<-card
     }
-    for(s in req$project$samples) for(template in widget_templates) {
-      widget<-template
-      widget$id<-paste0(s$id,"/",widget$id)
-      widget$sampleId<-s$id
-      widget$reportSampleId<-s$id
-      widgets[[length(widgets)+1]]<-widget
+    for(template in widget_templates) {
+      target_id <- template$sampleId
+      targets <- if(is.null(target_id)||identical(target_id,"active")) req$project$samples else
+        Filter(function(s)identical(s$id,target_id),req$project$samples)
+      for(s in targets) {
+        widget<-template
+        widget$id<-paste0(s$id,"/",widget$id)
+        widget$sampleId<-s$id
+        widget$reportSampleId<-s$id
+        widgets[[length(widgets)+1]]<-widget
+      }
     }
     req$plots<-cards
     req$widgets<-widgets
@@ -708,6 +826,6 @@ dispatch <- function(req) {
     return(export_vector(req,"pdf",FALSE))
   }
   if(identical(req$action,"worksheet"))return(worksheet(req))
-  if(identical(req$action,"health"))return(c(version_info(),list(workerPid=Sys.getpid())))
+  if(identical(req$action,"health"))return(c(version_info(),list(workerPid=Sys.getpid(),cache=cache_health())))
   .dispatch_core(req)
 }

@@ -179,10 +179,21 @@ export interface Worksheet {
   divaTemplate?: string;
   divaSourceId?: string;
 }
+/** Layout and the gate definitions needed to reproduce it, without event data. */
+export interface WorksheetTemplate {
+  schema: "flowdesk-worksheet-template/1";
+  name: string;
+  worksheet: Worksheet;
+  gateDefinitions: Gate[];
+  sampleBindings?: { id: string; name: string; channels: { id: string; label: string }[] }[];
+}
 export interface WorksheetData extends PlotData, PlotStyle {
   xTicks?: { value: number; label: string; major?: boolean }[];
   yTicks?: { value: number; label: string; major?: boolean }[];
   excluded?: number;
+  /** Event-derived bounds before an automatically synchronized display range is applied. */
+  autoXRange?: [number, number];
+  autoYRange?: [number, number];
   density?: {
     x: number[];
     y: number[];
