@@ -293,7 +293,7 @@ export_pdf <- function(p, storage, path) {
         if (g$type == "quadrant") abline(v = g$center[[1]], h = g$center[[2]], col = "#dc7019")
       }
     }
-    mtext(paste("FlowDesk Tauri |", p$name, "| Compensation", if (a$compensationEnabled) "ON" else "OFF"), outer = TRUE, side = 3, line = .5, font = 2)
+    mtext(paste("GlowJo |", p$name, "| Compensation", if (a$compensationEnabled) "ON" else "OFF"), outer = TRUE, side = 3, line = .5, font = 2)
     mtext("Plot coordinates: linear / fixed logicle (w=0.5, t=262144, m=4.5, a=0). Plots sampled to 20,000; statistics use all events.", outer = TRUE, side = 1, cex = .65)
     chunks <- split(a$stats, ceiling(seq_along(a$stats)/14))
     for (chunk in chunks) {

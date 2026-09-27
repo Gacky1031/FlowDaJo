@@ -620,7 +620,7 @@ async function restoreRecovery() {
     clearRecovery(); return;
   }
   const when = new Date(snapshot.savedAt).toLocaleString("ja-JP");
-  if (!(await confirm(`前回の未保存ワークスペース（${when}）を復旧しますか？`, { title: "FlowDeskの復旧" }))) {
+  if (!(await confirm(`前回の未保存ワークスペース（${when}）を復旧しますか？`, { title: "GlowJoの復旧" }))) {
     clearRecovery(); return;
   }
   try {
@@ -981,7 +981,7 @@ function render() {
   const worksheetItemCount = sheet().plots.length + widgets.length;
   const gridColumns = Math.min(8, Math.max(1, Math.ceil(Math.sqrt(Math.max(1, worksheetItemCount)))));
   const gridRows = Math.min(20, Math.max(1, Math.ceil(Math.max(1, worksheetItemCount) / gridColumns)));
-  app.innerHTML = `<header><strong>FlowDesk <span>WORKSPACE</span></strong><input id="experiment" value="${esc(project.name)}" aria-label="Experiment name"><span class="spacer"></span><span>R / flowCore · 0.4.0</span></header><nav class="toolbar"><button id="import" class="primary">＋ FCS</button><button id="folder">DIVAフォルダ</button><button id="diva">DIVA XML</button><button id="demo">デモ</button><span class="divider"></span><button id="load">開く</button><button id="save">保存</button><button id="undo" ${history.length ? "" : "disabled"} title="Ctrl+Z">↶ 戻す</button><button id="redo" ${future.length ? "" : "disabled"} title="Ctrl+Y">↷ やり直す</button><span class="spacer"></span><button id="batch" title="個別ゲートの階層を他サンプルへコピー">ゲート階層コピー</button><button id="csv" title="全サンプル・全分画の統計をCSVで出力">統計 CSV</button><button id="pdf">Worksheet PDF</button><button id="report">全サンプル report</button><button id="template" title="現在のワークシートとゲート定義だけをテンプレート保存">テンプレート</button><button id="toggle-properties" title="軸・補正・分画の詳細設定">解析設定</button></nav><div class="shell"><aside class="browser"><h2>Samples & populations <span>${project.samples.length}</span></h2><div id="tree">${tree()}</div><div class="hint tree-help">集団をダブルクリック、またはワークシートへドラッグしてプロットを追加。Globalは1サンプル、Normalは複数サンプルを比較します。</div><button id="show-population">選択集団をプロットに追加</button></aside><main><div class="sheet-tabs">${project.worksheets!.map((s) => `<button data-sheet="${s.id}" class="${s.id === sheet().id ? "active" : ""}">${esc(s.name)} <small>${s.mode === "normal" ? "Normal" : "Global"} · ${s.plots.length}</small></button>`).join("")}<button id="new-sheet" title="ワークシートを追加">＋</button><button id="clone-sheet" title="ワークシートを複製">⧉</button></div><div class="workspace-heading"><input id="sheet-name" value="${esc(sheet().name)}" aria-label="Worksheet name"><div class="sheet-mode" aria-label="ワークシートモード"><span>Mode:</span><button type="button" data-sheet-mode="global" class="${worksheetMode() === "global" ? "active" : ""}" title="選択サンプルを全プロットへ一括適用">Global</button><button type="button" data-sheet-mode="normal" class="${worksheetMode() === "normal" ? "active" : ""}" title="サンプルごとに固定したプロットを比較">Normal</button></div><button id="add-plot" class="primary">＋ Plot</button><button id="add-print-page" title="A4の印刷範囲を追加">＋ A4ページ</button><details class="widget-add-menu"><summary title="ワークシートウィジェットを追加">＋ ウィジェット</summary><div><button id="statistics-widget-settings" type="button">Population statistics</button><button id="compensation-widget-add" type="button">Compensation調整</button></div></details><details class="worksheet-actions-menu"><summary>解析操作 ▾</summary><div><button id="standard-expansion" type="button" title="FSC/SSCの定型展開を追加">FSC / SSC 定型展開</button><button id="compensation-expansion" type="button" title="FSC-Aを横軸、選択蛍光を縦軸にしたコンペ調整用プロットを作成">Comp定型解析</button><button id="batch-plots-sheet" type="button" title="選択したプロット・ウィジェットを他サンプルへ展開" ${worksheetMode() === "normal" ? "" : "disabled"}>Normal 選択項目を展開</button></div></details><div class="grid-arrange-control"><button id="arrange" title="各プロットを最も近いグリッドに揃える">グリッド整列</button><details class="grid-arrange-menu"><summary aria-label="グリッド配置の行数と列数を選択" title="行数と列数を指定">▾</summary><form id="grid-arrange-form"><strong>配置グリッド</strong><div class="grid-fields"><label>行<input name="rows" type="number" min="1" max="20" value="${gridRows}"></label><label>列<input name="columns" type="number" min="1" max="20" value="${gridColumns}"></label></div><label>対象<select name="scope"><option value="all">ワークシート全体</option><option value="selected">選択した項目</option></select></label><button class="primary" type="submit">この行 × 列で配置</button></form></details></div><span class="zoom-controls"><button id="zoom-out">−</button><output id="zoom-value">100%</output><button id="zoom-in">＋</button><button id="zoom-reset">1:1</button></span><span id="selection-info" class="selection-info">選択: ${selectedCards.size + selectedWidgets.size}</span><span class="spacer"></span><div class="gate-tools">${[
+  app.innerHTML = `<header><strong>GlowJo <span>WORKSPACE</span></strong><input id="experiment" value="${esc(project.name)}" aria-label="Experiment name"><span class="spacer"></span><span>R / flowCore · 0.4.0</span></header><nav class="toolbar"><button id="import" class="primary">＋ FCS</button><button id="folder">DIVAフォルダ</button><button id="diva">DIVA XML</button><button id="demo">デモ</button><span class="divider"></span><button id="load">開く</button><button id="save">保存</button><button id="undo" ${history.length ? "" : "disabled"} title="Ctrl+Z">↶ 戻す</button><button id="redo" ${future.length ? "" : "disabled"} title="Ctrl+Y">↷ やり直す</button><span class="spacer"></span><button id="batch" title="個別ゲートの階層を他サンプルへコピー">ゲート階層コピー</button><button id="csv" title="全サンプル・全分画の統計をCSVで出力">統計 CSV</button><button id="pdf">Worksheet PDF</button><button id="report">全サンプル report</button><button id="template" title="現在のワークシートとゲート定義だけをテンプレート保存">テンプレート</button><button id="toggle-properties" title="軸・補正・分画の詳細設定">解析設定</button></nav><div class="shell"><aside class="browser"><h2>Samples & populations <span>${project.samples.length}</span></h2><div id="tree">${tree()}</div><div class="hint tree-help">集団をダブルクリック、またはワークシートへドラッグしてプロットを追加。Globalは1サンプル、Normalは複数サンプルを比較します。</div><button id="show-population">選択集団をプロットに追加</button></aside><main><div class="sheet-tabs">${project.worksheets!.map((s) => `<button data-sheet="${s.id}" class="${s.id === sheet().id ? "active" : ""}">${esc(s.name)} <small>${s.mode === "normal" ? "Normal" : "Global"} · ${s.plots.length}</small></button>`).join("")}<button id="new-sheet" title="ワークシートを追加">＋</button><button id="clone-sheet" title="ワークシートを複製">⧉</button></div><div class="workspace-heading"><input id="sheet-name" value="${esc(sheet().name)}" aria-label="Worksheet name"><div class="sheet-mode" aria-label="ワークシートモード"><span>Mode:</span><button type="button" data-sheet-mode="global" class="${worksheetMode() === "global" ? "active" : ""}" title="選択サンプルを全プロットへ一括適用">Global</button><button type="button" data-sheet-mode="normal" class="${worksheetMode() === "normal" ? "active" : ""}" title="サンプルごとに固定したプロットを比較">Normal</button></div><button id="add-plot" class="primary">＋ Plot</button><button id="add-print-page" title="A4の印刷範囲を追加">＋ A4ページ</button><details class="widget-add-menu"><summary title="ワークシートウィジェットを追加">＋ ウィジェット</summary><div><button id="statistics-widget-settings" type="button">Population statistics</button><button id="compensation-widget-add" type="button">Compensation調整</button></div></details><details class="worksheet-actions-menu"><summary>解析操作 ▾</summary><div><button id="standard-expansion" type="button" title="FSC/SSCの定型展開を追加">FSC / SSC 定型展開</button><button id="compensation-expansion" type="button" title="FSC-Aを横軸、選択蛍光を縦軸にしたコンペ調整用プロットを作成">Comp定型解析</button><button id="batch-plots-sheet" type="button" title="選択したプロット・ウィジェットを他サンプルへ展開" ${worksheetMode() === "normal" ? "" : "disabled"}>Normal 選択項目を展開</button></div></details><div class="grid-arrange-control"><button id="arrange" title="各プロットを最も近いグリッドに揃える">グリッド整列</button><details class="grid-arrange-menu"><summary aria-label="グリッド配置の行数と列数を選択" title="行数と列数を指定">▾</summary><form id="grid-arrange-form"><strong>配置グリッド</strong><div class="grid-fields"><label>行<input name="rows" type="number" min="1" max="20" value="${gridRows}"></label><label>列<input name="columns" type="number" min="1" max="20" value="${gridColumns}"></label></div><label>対象<select name="scope"><option value="all">ワークシート全体</option><option value="selected">選択した項目</option></select></label><button class="primary" type="submit">この行 × 列で配置</button></form></details></div><span class="zoom-controls"><button id="zoom-out">−</button><output id="zoom-value">100%</output><button id="zoom-in">＋</button><button id="zoom-reset">1:1</button></span><span id="selection-info" class="selection-info">選択: ${selectedCards.size + selectedWidgets.size}</span><span class="spacer"></span><div class="gate-tools">${[
     ["select", "選択 / 編集"],
     ["rectangle", "矩形"],
     ["polygon", "多角形"],
@@ -3790,7 +3790,7 @@ async function importData(source: "fcs" | "folder" | "diva") {
 async function saveProject() {
   const path = await save({
     defaultPath: projectPath ?? `${project.name}.flowdesk-r.json`,
-    filters: [{ name: "FlowDesk project", extensions: ["json"] }],
+    filters: [{ name: "GlowJo project", extensions: ["json"] }],
   });
   if (!path) return;
   await runOperation("保存中…", async () => {
@@ -4105,13 +4105,13 @@ async function loadProject() {
   if (
     dirty &&
     !(await confirm("未保存の変更があります。保存せずに開きますか？", {
-      title: "FlowDesk",
+      title: "GlowJo",
     }))
   )
     return;
   const path = await open({
     multiple: false,
-    filters: [{ name: "FlowDesk project", extensions: ["json"] }],
+    filters: [{ name: "GlowJo project", extensions: ["json"] }],
   });
   if (!path || Array.isArray(path)) return;
   await runOperation("プロジェクトを開いています…", async () => {
@@ -4548,7 +4548,7 @@ if (isTauri()) {
           operation
             ? "ファイル処理中です。終了しますか？"
             : "未保存の変更があります。終了しますか？",
-          { title: "FlowDesk" },
+          { title: "GlowJo" },
         )
       ) {
         writeRecovery();

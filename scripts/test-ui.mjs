@@ -65,7 +65,7 @@ const server = await createServer({
   ],
 });
 await server.listen();
-console.log("FlowDesk test bridge http://127.0.0.1:1420");
+console.log("GlowJo test bridge http://127.0.0.1:1420");
 process.on("SIGINT", () => {
   worker.close();
   server.close();

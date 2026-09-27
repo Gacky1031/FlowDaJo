@@ -1,6 +1,6 @@
-# FlowDesk MCP
+# GlowJo MCP
 
-このPCのCodexには `flowdesk` という名前で登録済みです。接続が表示されない場合はCodexを再起動してください。
+このPCでは既存のCodex設定との互換性を保つため、接続名 `flowdesk` で登録しています。接続が表示されない場合はCodexを再起動してください。
 
 ## 操作できること
 
@@ -15,9 +15,9 @@
 
 ## AIへの依頼例
 
-「FlowDesk MCPで C:/data/experiment のFCSを取り込み、FSC-A対SSC-AのGlobal worksheetを作って。プロジェクトを C:/data/analysis.json に保存して」
+「GlowJo MCPで C:/data/experiment のFCSを取り込み、FSC-A対SSC-AのGlobal worksheetを作って。プロジェクトを C:/data/analysis.json に保存して」
 
-「FlowDesk MCPで C:/data/analysis.json を開き、各サンプルのCells分画の細胞数と割合を C:/data/counts.csv に出力して」
+「GlowJo MCPで C:/data/analysis.json を開き、各サンプルのCells分画の細胞数と割合を C:/data/counts.csv に出力して」
 
 ## 動作と取り扱い
 

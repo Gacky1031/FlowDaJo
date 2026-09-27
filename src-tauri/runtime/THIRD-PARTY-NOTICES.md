@@ -11,4 +11,4 @@ Fixed runtime archive: https://msedge.sf.dl.delivery.mp.microsoft.com/filestream
 Microsoft distribution instructions: https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution
 R license information: https://www.r-project.org/Licenses/
 
-Fixed WebView2 is updated by shipping a new FlowDesk package. It does not use the computer's Evergreen installation or its automatic updates.
+Fixed WebView2 is updated by shipping a new GlowJo package. It does not use the computer's Evergreen installation or its automatic updates.

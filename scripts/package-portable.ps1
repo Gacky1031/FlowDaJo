@@ -5,10 +5,10 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot -Parent)
-$destination = if ($DestinationPath) { $DestinationPath } else { Join-Path (Get-Location) 'release\FlowDesk-Tauri-0.4.0' }
+$destination = if ($DestinationPath) { $DestinationPath } else { Join-Path (Get-Location) 'release\GlowJo-0.4.0' }
 $destination = [System.IO.Path]::GetFullPath($destination)
 New-Item -ItemType Directory -Path (Join-Path $destination 'r') -Force | Out-Null
-Copy-Item -LiteralPath 'src-tauri\target\release\flowdesk-tauri.exe' -Destination (Join-Path $destination 'FlowDesk-Tauri.exe') -Force
+Copy-Item -LiteralPath 'src-tauri\target\release\flowdesk-tauri.exe' -Destination (Join-Path $destination 'GlowJo.exe') -Force
 Copy-Item -LiteralPath 'r\core.R','r\worker.R','r\worksheet.R','r\diva.R' -Destination (Join-Path $destination 'r') -Force
 Copy-Item -LiteralPath 'src-tauri\runtime\WebView2Loader.dll','README.md' -Destination $destination -Force
 New-Item -ItemType Directory -Path (Join-Path $destination 'runtime') -Force | Out-Null
@@ -19,7 +19,7 @@ Copy-Item -LiteralPath 'src-tauri\runtime\r-manifest.json','src-tauri\runtime\TH
 New-Item -ItemType Directory -Path (Join-Path $destination 'docs') -Force | Out-Null
 Copy-Item -LiteralPath 'docs\ARCHITECTURE.md','docs\VALIDATION-0.4.0.md','docs\UI-INTERACTION.md' -Destination (Join-Path $destination 'docs') -Force
 if (-not $SkipArchive) {
-  $archive = if ($ArchivePath) { $ArchivePath } else { Join-Path (Get-Location) 'release\FlowDesk-Tauri-0.4.0-windows-x64-bundled.zip' }
+  $archive = if ($ArchivePath) { $ArchivePath } else { Join-Path (Get-Location) 'release\GlowJo-0.4.0-windows-x64-bundled.zip' }
   $archive = [System.IO.Path]::GetFullPath($archive)
   Compress-Archive -LiteralPath $destination -DestinationPath $archive -Force
   Get-FileHash $archive -Algorithm SHA256
