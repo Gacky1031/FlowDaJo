@@ -33,7 +33,7 @@ GlobalのカードはsampleId: active、Normalのカードは具体的なサン�
 
 ## 実装と再登録
 
-このMCPはソースフォルダ内のNode.jsサーバーです。既存のWindows配布ZIPには追加していません。このPCのNode.jsとプロジェクト内の同梱Rを使います。GUIを起動する必要はありません。
+このMCPはソースフォルダ内のNode.jsサーバーです。Windows配布ZIPには含まれていません。開発環境にNode.jsを用意して、プロジェクトに同梱されたRを使います。GUIを起動する必要はありません。
 
 ```powershell
 npm ci
