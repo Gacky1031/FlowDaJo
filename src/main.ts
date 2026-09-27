@@ -957,6 +957,26 @@ function inspector() {
   <p class="hint">Compensationはワークシート上の「Compensation調整」ウィジェットで、プロットを見ながら編集・適用できます。</p>
   <details><summary>実験ノート / import情報</summary><textarea id="notes">${esc(project.notes)}</textarea><p class="hint">${esc(project.importWarnings.join("\n"))}</p></details>`;
 }
+function positionToolbarMenu(menu: HTMLDetailsElement) {
+  const panel = menu.querySelector<HTMLElement>(":scope > div");
+  if (!panel) return;
+  if (!menu.open) {
+    if (panel.matches(":popover-open")) panel.hidePopover();
+    delete menu.dataset.positioned;
+    return;
+  }
+  const trigger = menu.querySelector("summary");
+  if (!trigger) return;
+  if (!panel.matches(":popover-open")) panel.showPopover();
+  const bounds = trigger.getBoundingClientRect();
+  const margin = 8;
+  const top = Math.max(margin, Math.min(bounds.bottom + 3, window.innerHeight - margin - 40));
+  panel.style.top = `${top}px`;
+  panel.style.maxHeight = `${Math.max(40, Math.min(560, window.innerHeight - top - margin))}px`;
+  panel.style.left = `${Math.max(margin, Math.min(bounds.left, window.innerWidth - panel.offsetWidth - margin))}px`;
+  menu.dataset.positioned = "true";
+}
+
 function render() {
   normalizeWorksheetPlots();
   const currentWidgetIds = new Set((sheet().widgets ?? []).map((widget) => widget.id));
@@ -1002,13 +1022,22 @@ function render() {
   const group = (title: string, ids: string[], before: HTMLElement) => {
     const menu = document.createElement("details");
     menu.className = "toolbar-menu";
-    menu.innerHTML = `<summary>${title} ▾</summary><div></div>`;
+    menu.innerHTML = `<summary>${title} ▾</summary><div popover="manual"></div>`;
     for (const id of ids) {
       const button = document.getElementById(id);
       if (button) menu.querySelector("div")!.append(button);
     }
     menu.addEventListener("click", (event) => {
       if ((event.target as Element).closest("button")) menu.open = false;
+    });
+    menu.addEventListener("toggle", () => {
+      if (!menu.isConnected) return;
+      if (menu.open) {
+        toolbar.querySelectorAll<HTMLDetailsElement>(".toolbar-menu[open]").forEach((other) => {
+          if (other !== menu) other.open = false;
+        });
+      }
+      positionToolbarMenu(menu);
     });
     toolbar.insertBefore(menu, before);
     return menu;
@@ -4532,6 +4561,7 @@ document.addEventListener("keydown", (e) => {
   }
 });
 window.addEventListener("resize", () => {
+  document.querySelectorAll<HTMLDetailsElement>(".toolbar-menu[open]").forEach(positionToolbarMenu);
   if (!gesture) paint();
 });
 render();

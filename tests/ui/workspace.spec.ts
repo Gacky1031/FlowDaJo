@@ -817,13 +817,22 @@ test("worksheet statistics widget, plot visibility settings and axis preview", a
 });
 
 test("toolbar dropdowns hide until opened and their items remain clickable", async ({ page }) => {
+  await page.setViewportSize({ width: 1080, height: 720 });
   await page.goto("/");
   await expect(page.locator(".status")).toContainText("起動完了");
+  const visibleWithoutScrolling = async (selector: string) => page.locator(selector).evaluate((button) => {
+    const box = button.getBoundingClientRect();
+    const target = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+    return box.top >= 0 && box.bottom <= window.innerHeight && button.contains(target);
+  });
   const fileMenu = page.locator('.toolbar-menu:has(#demo)');
   const fileItems = fileMenu.locator(":scope > div");
   await expect(fileItems).toBeHidden();
   await fileMenu.locator("summary").click();
   await expect(fileItems).toBeVisible();
+  await expect(fileItems).toHaveJSProperty("popover", "manual");
+  expect(await fileItems.evaluate((panel) => panel.matches(":popover-open"))).toBe(true);
+  expect(await visibleWithoutScrolling("#apply-template")).toBe(true);
   await page.locator("#demo").click();
   await expect(fileMenu).not.toHaveAttribute("open", "");
   await expect(page.locator(".statistics")).toContainText("16,000");
@@ -833,6 +842,8 @@ test("toolbar dropdowns hide until opened and their items remain clickable", asy
   await expect(outputItems).toBeHidden();
   await outputMenu.locator("summary").click();
   await expect(outputItems).toBeVisible();
+  expect(await outputItems.evaluate((panel) => panel.matches(":popover-open"))).toBe(true);
+  expect(await visibleWithoutScrolling("#report")).toBe(true);
   await page.locator("#csv").click();
   await expect(page.locator(".status")).toContainText("統計CSVを保存しました", { timeout: 30_000 });
   await expect(outputMenu).not.toHaveAttribute("open", "");
