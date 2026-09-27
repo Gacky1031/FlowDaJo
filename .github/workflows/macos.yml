@@ -2,14 +2,6 @@ name: Build macOS installers
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - "src/**"
-      - "src-tauri/**"
-      - "r/**"
-      - "scripts/setup-r.R"
-      - "scripts/stage-r-runtime.R"
-      - ".github/workflows/macos.yml"
 
 jobs:
   bundle:

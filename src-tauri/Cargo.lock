@@ -929,7 +929,7 @@ dependencies = [
 
 [[package]]
 name = "flowdesk-tauri"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "lopdf",
  "serde_json",

@@ -1,8 +1,8 @@
 # FlowDaJo
 
-FlowDaJoは、FCSデータのゲーティング、サンプル比較、PDF出力を行うフローサイトメトリー解析アプリです。WindowsとmacOSに対応し、解析エンジンのRとflowCoreをアプリに同梱しています。
+FlowDaJoは、FCSデータのゲーティング、サンプル比較、PDF出力を行うフローサイトメトリー解析アプリです。解析エンジンにはRとflowCoreを使用します。
 
-WindowsではインストーラーまたはポータブルZIPを使います。ポータブル版はZIPを展開し、フォルダ内のアプリを起動してください。macOSではお使いのMac（Intel / Apple Silicon）に合うDMGを使います。Rの別途インストールは不要です。
+**配布中のビルドはWindows x64向けです。** [Releases](https://github.com/Gacky1031/FlowDaJo/releases/latest)から通常のインストーラー、またはZIPを展開して使うポータブル版を選べます。どちらにもRとflowCoreを同梱しており、別途Rをインストールする必要はありません。macOS版は現在のReleaseでは配布していません。Macでは[`scripts/build-macos.sh`](scripts/build-macos.sh)を使ってソースからビルドできます。
 
 ## 基本のワークフロー
 
