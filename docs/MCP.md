@@ -1,6 +1,6 @@
 # FlowDaJo MCP
 
-このPCでは既存のCodex設定との互換性を保つため、接続名 `flowdesk` で登録しています。接続が表示されない場合はCodexを再起動してください。
+接続名の例は `flowdajo` です。登録後に接続が表示されない場合はCodexを再起動してください。
 
 ## 操作できること
 
@@ -38,10 +38,11 @@ GlobalのカードはsampleId: active、Normalのカードは具体的なサン�
 ```powershell
 npm ci
 node --test tests/mcp.test.mjs
-codex mcp add flowdesk -- "C:\Program Files\nodejs\node.exe" ".\mcp\server.mjs"
+$repo = (Resolve-Path .).Path
+codex mcp add flowdajo -- node "$repo\mcp\server.mjs"
 ```
 
-Codex設定は ~/.codex/config.toml。元設定のバックアップはconfig.toml.before-flowdesk-mcp-20260921です。接続はstdioで、TCPポートや外部公開サーバーは使いません。
+上記はリポジトリ直下で実行してください。Codexは接続設定をユーザーのローカル設定へ保存します。接続はstdioで、TCPポートや外部公開サーバーは使いません。
 
 登録方法: https://developers.openai.com/codex/mcp/
 
