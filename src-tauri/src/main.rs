@@ -30,7 +30,13 @@ fn runtime_root() -> Result<PathBuf, String> {
 }
 
 fn rscript(root: &std::path::Path) -> Result<PathBuf, String> {
-    let path = root.join(if cfg!(windows) { "R/bin/Rscript.exe" } else { "R/bin/Rscript" });
+    let path = root.join(if cfg!(windows) {
+        "R/bin/Rscript.exe"
+    } else if cfg!(target_os = "macos") {
+        "R/bin/exec/R"
+    } else {
+        "R/bin/Rscript"
+    });
     if !path.is_file() || !root.join("R/library/flowCore/DESCRIPTION").is_file() {
         return Err("Bundled R is missing. Extract the entire application ZIP, including the runtime folder, or reinstall FlowDaJo.".into());
     }

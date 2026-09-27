@@ -1,5 +1,9 @@
-invisible(Sys.setlocale("LC_CTYPE", "English_United States.utf8"))
+if (.Platform$OS.type == "windows") invisible(Sys.setlocale("LC_CTYPE", "English_United States.utf8"))
 ip <- installed.packages()
+for (package in c("flowCore", "jsonlite", "xml2")) {
+  if (!package %in% rownames(ip) || !requireNamespace(package, quietly = TRUE))
+    stop("Cannot stage missing R package: ", package)
+}
 packages <- unique(c("flowCore", "jsonlite", "xml2",
   unlist(tools::package_dependencies(c("flowCore", "jsonlite", "xml2"), db=ip,
     which=c("Depends", "Imports", "LinkingTo"), recursive=TRUE)),
@@ -7,6 +11,7 @@ packages <- unique(c("flowCore", "jsonlite", "xml2",
 packages <- intersect(packages, rownames(ip))
 root <- normalizePath("src-tauri/runtime", winslash="/", mustWork=TRUE)
 dest <- file.path(root,"R")
+if (dir.exists(dest)) unlink(dest, recursive=TRUE)
 dir.create(dest, showWarnings=FALSE)
 copy_checked <- function(from, to) {
   if (!all(file.copy(from, to, recursive=dir.exists(from), overwrite=TRUE, copy.date=TRUE)))

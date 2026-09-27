@@ -99,11 +99,14 @@ header input {
   flex: 1;
 }
 .toolbar {
+  position: relative;
+  z-index: 50;
   height: 43px;
   padding: 5px 12px;
   display: flex;
   align-items: center;
   gap: 6px;
+  overflow: visible;
   background: #fafbfd;
   border-bottom: 1px solid #ccd6df;
 }
@@ -1314,7 +1317,6 @@ dialog h2 {
   }
   .toolbar {
     gap: 4px;
-    overflow-x: auto;
     white-space: nowrap;
   }
   .toolbar button {
@@ -1408,11 +1410,6 @@ dialog.properties::backdrop { background: #102e4555; }
 .gate-tools {
   flex-wrap: wrap;
 }
-.toolbar {
-  overflow-x: auto;
-}
-
-
 .sheet-mode,
 .gate-filter {
   display: inline-flex;

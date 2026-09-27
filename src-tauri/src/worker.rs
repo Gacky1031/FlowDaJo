@@ -40,13 +40,24 @@ impl Worker {
             path_parts.push(windows.join("System32"));
             path_parts.push(windows);
         }
-        if let Some(existing) = std::env::var_os("PATH") { path_parts.push(PathBuf::from(existing)); }
+        if let Some(existing) = std::env::var_os("PATH") {
+            path_parts.extend(std::env::split_paths(&existing));
+        }
         let path = std::env::join_paths(path_parts).map_err(|e| e.to_string())?;
         let mut command = Command::new(super::rscript(&runtime)?);
+        #[cfg(target_os = "macos")]
+        let locale = "C.UTF-8";
+        #[cfg(not(target_os = "macos"))]
+        let locale = "C";
+        command.arg("--vanilla");
+        #[cfg(target_os = "macos")]
         command
-            .args(["--vanilla"])
-            .arg(&script)
-            .arg("--persistent")
+            .args(["--slave", "--no-echo"])
+            .arg(format!("--file={}", script.display()))
+            .args(["--args", "--persistent"]);
+        #[cfg(not(target_os = "macos"))]
+        command.arg(&script).arg("--persistent");
+        command
             .env("R_HOME", &rhome)
             .env("R_LIBS", &library)
             .env("R_LIBS_USER", &library)
@@ -55,8 +66,8 @@ impl Worker {
                 "R_DEFAULT_PACKAGES",
                 "datasets,utils,grDevices,graphics,stats,methods",
             )
-            .env("LANG", "C")
-            .env("LC_ALL", "C")
+            .env("LANG", locale)
+            .env("LC_ALL", locale)
             .env("PATH", path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

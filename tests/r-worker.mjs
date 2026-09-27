@@ -3,15 +3,19 @@ import { createInterface } from "node:readline";
 import { copyFileSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 export function rWorker(storage) {
+  const macOS = process.platform === "darwin";
+  const script = resolve("r/worker.R");
   const processR = spawn(
-    resolve("src-tauri/runtime/R/bin/Rscript.exe"),
-    ["--vanilla", resolve("r/worker.R"), "--persistent"],
+    resolve(macOS ? "src-tauri/runtime/R/bin/exec/R" : "src-tauri/runtime/R/bin/Rscript.exe"),
+    macOS
+      ? ["--vanilla", "--slave", "--no-echo", `--file=${script}`, "--args", "--persistent"]
+      : ["--vanilla", script, "--persistent"],
     {
       windowsHide: true,
       env: {
         ...process.env,
-        LANG: "C",
-        LC_ALL: "C",
+        LANG: macOS ? "C.UTF-8" : "C",
+        LC_ALL: macOS ? "C.UTF-8" : "C",
         R_HOME: resolve("src-tauri/runtime/R"),
         R_LIBS_USER: resolve("src-tauri/runtime/R/library"),
         R_LIBS_SITE: resolve("src-tauri/runtime/R/library"),

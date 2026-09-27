@@ -1,11 +1,12 @@
 // Development-only bridge for interaction tests. Never imported by production.
 import { createServer } from "vite";
-import { copyFileSync, mkdtempSync, unlinkSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, unlinkSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { rWorker } from "../tests/r-worker.mjs";
 const storage = mkdtempSync(join(tmpdir(), "flowdesk-browser-"));
+mkdirSync(resolve("artifacts"), { recursive: true });
 const worker = rWorker(storage);
 const server = await createServer({
   server: { host: "127.0.0.1", port: 1420, strictPort: true },

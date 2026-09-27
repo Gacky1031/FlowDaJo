@@ -8,4 +8,7 @@ packages <- c("jsonlite", "xml2", "BiocManager")
 missing <- packages[!vapply(packages, requireNamespace, logical(1), quietly = TRUE)]
 if (length(missing)) install.packages(missing, repos = "https://cloud.r-project.org")
 if (!requireNamespace("flowCore", quietly = TRUE)) BiocManager::install("flowCore", ask = FALSE, update = FALSE)
+for (package in c("jsonlite", "xml2", "flowCore")) {
+  if (!requireNamespace(package, quietly = TRUE)) stop("Required R package is unavailable: ", package)
+}
 cat("R and flowCore ready\n")

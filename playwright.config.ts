@@ -7,7 +7,7 @@ export default defineConfig({
   use: {
     baseURL: "http://127.0.0.1:1420",
     viewport: { width: 1480, height: 960 },
-    channel: "msedge",
+    channel: process.env.PLAYWRIGHT_CHANNEL || "msedge",
     headless: true,
   },
   webServer: {
