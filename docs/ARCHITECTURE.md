@@ -1,6 +1,6 @@
 # Architecture — 0.4.0
 
-GlowJo is a separate Windows and macOS desktop application. The original Python sibling is not modified.
+FlowDaJo is a separate Windows and macOS desktop application. The original Python sibling is not modified.
 
 ## Interactive path
 

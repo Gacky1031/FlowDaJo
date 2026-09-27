@@ -14,8 +14,8 @@ await mkdir(storage, { recursive: true });
 let project;
 let queue = Promise.resolve();
 const children = new Set();
-const server = new McpServer({ name: "glowjo", version: "0.1.0" }, {
-  instructions: "GlowJo R/flowCore analysis session, separate from the desktop's unsaved state. Start with new_project or load_project, inspect get_project, then edit gates/worksheets/compensation, analyze and save_project. All file paths must be absolute. No arbitrary R code execution. Save JSON and open it in the desktop to see changes. Gate coordinates and axis min/max use transformed display coordinates, not raw fluorescence for log/logicle."
+const server = new McpServer({ name: "flowdajo", version: "0.1.0" }, {
+  instructions: "FlowDaJo R/flowCore analysis session, separate from the desktop's unsaved state. Start with new_project or load_project, inspect get_project, then edit gates/worksheets/compensation, analyze and save_project. All file paths must be absolute. No arbitrary R code execution. Save JSON and open it in the desktop to see changes. Gate coordinates and axis min/max use transformed display coordinates, not raw fluorescence for log/logicle."
 });
 async function rcall(payload) {
   return new Promise((ok, fail) => {
@@ -108,13 +108,13 @@ tool("new_project", "Create an independent MCP session project. Replaces the ses
   return project;
 });
 tool("get_project", "Read the complete current project: sample channels, compensation, gate definitions and worksheet layouts.", {}, () => current(), true);
-tool("load_project", "Load and validate a GlowJo JSON project; does not read desktop unsaved state.", {
+tool("load_project", "Load and validate a FlowDaJo JSON project; does not read desktop unsaved state.", {
   path:pathSchema, replace:z.boolean().default(false)
 }, async a => {
   if (project && !a.replace) throw new Error("Session has a project; save it or set replace:true");
   const p = await rcall({action:"load",path:a.path}); project=p; return project;
 });
-tool("save_project", "Save the MCP project as desktop-compatible JSON. Open it in GlowJo to view/edit it.", {
+tool("save_project", "Save the MCP project as desktop-compatible JSON. Open it in FlowDaJo to view/edit it.", {
   path:pathSchema, overwrite:z.boolean().default(false)
 }, async a => { current(); await writable(a.path,a.overwrite); return rcall({action:"save",project,path:a.path}); });
 tool("import_samples", "Import FCS files or a DIVA folder into this session; returns channel metadata and import warnings. DIVA gate XML is not restored.", {

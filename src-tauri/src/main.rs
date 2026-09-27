@@ -32,7 +32,7 @@ fn runtime_root() -> Result<PathBuf, String> {
 fn rscript(root: &std::path::Path) -> Result<PathBuf, String> {
     let path = root.join(if cfg!(windows) { "R/bin/Rscript.exe" } else { "R/bin/Rscript" });
     if !path.is_file() || !root.join("R/library/flowCore/DESCRIPTION").is_file() {
-        return Err("Bundled R is missing. Extract the entire application ZIP, including the runtime folder, or reinstall GlowJo.".into());
+        return Err("Bundled R is missing. Extract the entire application ZIP, including the runtime folder, or reinstall FlowDaJo.".into());
     }
     Ok(path)
 }
@@ -109,7 +109,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![request, prepare_pdf_preview, commit_pdf_preview, release_pdf_preview])
         .build(tauri::generate_context!())
-        .expect("Failed to run GlowJo")
+        .expect("Failed to run FlowDaJo")
         .run(|_, event| {
             if matches!(event, tauri::RunEvent::Exit) {
                 worker::shutdown();

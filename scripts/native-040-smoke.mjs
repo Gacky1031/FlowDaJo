@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import assert from "node:assert/strict";
 
 const executable = resolve(
-  process.argv[2] || "release/GlowJo-0.4.0/GlowJo.exe",
+  process.argv[2] || "release/FlowDaJo-0.4.0/FlowDaJo.exe",
 );
 mkdirSync("artifacts", { recursive: true });
 const app = spawn(executable, [], {

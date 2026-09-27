@@ -1,6 +1,6 @@
-# GlowJo
+# FlowDaJo
 
-GlowJoは、FCSデータのゲーティング、サンプル比較、PDF出力を行うフローサイトメトリー解析アプリです。WindowsとmacOSに対応し、解析エンジンのRとflowCoreをアプリに同梱しています。
+FlowDaJoは、FCSデータのゲーティング、サンプル比較、PDF出力を行うフローサイトメトリー解析アプリです。WindowsとmacOSに対応し、解析エンジンのRとflowCoreをアプリに同梱しています。
 
 WindowsではインストーラーまたはポータブルZIPを使います。ポータブル版はZIPを展開し、フォルダ内のアプリを起動してください。macOSではお使いのMac（Intel / Apple Silicon）に合うDMGを使います。Rの別途インストールは不要です。
 
