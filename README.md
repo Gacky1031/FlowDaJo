@@ -2,12 +2,6 @@
 
 FlowDaJoは、FCSデータのゲーティング、サンプル比較、PDF出力を行うフローサイトメトリー解析アプリです。解析エンジンにはRとflowCoreを使用します。
 
-**配布中のビルドはWindows x64向けです。** [Releases](https://github.com/Gacky1031/FlowDaJo/releases/latest)から通常のインストーラー、またはZIPを展開して使うポータブル版を選べます。どちらにもRとflowCoreを同梱しており、別途Rをインストールする必要はありません。macOS版は現在のReleaseでは配布していません。Macでは[`scripts/build-macos.sh`](scripts/build-macos.sh)を使ってソースからビルドできます。
-
-## macOSでビルド
-
-HomebrewとXcode Command Line Toolsを用意し、リポジトリのルートで `bash scripts/build-macos.sh` を実行します。スクリプトは必要なビルド依存を導入し、同梱Rによるデモ生成と日本語名のFCSの取り込みを、DMG作成前とDMG内で検査します。完成したDMGは `src-tauri/target/release/bundle/dmg/` にあります。署名と公証は別途必要です。
-
 ## 基本のワークフロー
 
 1. **データを取り込む** — FACSDivaのXMLと対応するFCSデータを「DIVA XML」または「DIVAフォルダ」から読み込みます。複数のワークシートがある場合は、取り込むシートを選びます。FCSファイルだけを読み込むこともできます。
