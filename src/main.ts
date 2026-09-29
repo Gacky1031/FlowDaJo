@@ -2123,21 +2123,62 @@ function canPasteGateBranch(parentId: string, targetSampleId: string) {
   const target = sample(targetSampleId);
   const parent = parentId === "root" ? undefined : project.gates.find((gate) => gate.id === parentId);
   if (!clipboard || !target || (parentId !== "root" && (!parent || !gateAppliesToSample(parent, targetSampleId)))) return false;
-  const root = clipboard.gates.find((gate) => gate.id === clipboard.rootId);
-  if (!root || (gateScope(root) === "global" && parent && gateScope(parent) !== "global")) return false;
-  return clipboard.gates.every((gate) => target.channels.some((channel) => channel.id === gate.x.channel) &&
-    target.channels.some((channel) => channel.id === gate.y.channel));
+  // Keep paste available when only a descendant uses a channel missing from
+  // the target. pasteGateBranch maps matching channels and reports any branch
+  // it must omit instead of disabling the entire operation here.
+  return clipboard.gates.some((gate) => gate.id === clipboard.rootId);
 }
 function pasteGateBranch(parentId: string, targetSampleId: string) {
   const clipboard = gateClipboard;
   if (!clipboard || !canPasteGateBranch(parentId, targetSampleId)) {
-    message("貼り付け先の親集団またはサンプルのチャンネルが、コピー元と一致しません。", true);
+    message("貼り付け先の親集団またはサンプルを確認できません。", true);
     return;
   }
   const parent = parentId === "root" ? undefined : project.gates.find((gate) => gate.id === parentId);
   const root = clipboard.gates.find((gate) => gate.id === clipboard.rootId)!;
   const targetScope = parent ? gateScope(parent) : "global";
-  const ids = new Map(clipboard.gates.map((gate) => [gate.id, uid()]));
+  const source = sample(clipboard.sourceSampleId);
+  const target = sample(targetSampleId)!;
+  const normalizeLabel = (label: string) => label.normalize("NFKC").replace(/\s+/g, " ").trim().toLocaleLowerCase();
+  const mapChannel = (channelId: string) => {
+    const exact = target.channels.find((channel) => channel.id === channelId);
+    if (exact) return exact.id;
+    const sourceLabel = source?.channels.find((channel) => channel.id === channelId)?.label;
+    if (!sourceLabel) return undefined;
+    const matches = target.channels.filter((channel) => normalizeLabel(channel.label) === normalizeLabel(sourceLabel));
+    return matches.length === 1 ? matches[0].id : undefined;
+  };
+  const mappedAxes = new Map<string, { x: string; y: string }>();
+  const excluded = new Set<string>();
+  for (const gate of clipboard.gates) {
+    const x = mapChannel(gate.x.channel);
+    const y = mapChannel(gate.y.channel);
+    if (x && y) mappedAxes.set(gate.id, { x, y });
+    else excluded.add(gate.id);
+  }
+  // Quadrant gates are one indivisible group. If one member cannot be mapped,
+  // omit the whole group and all descendants so the pasted tree stays valid.
+  let expanded = true;
+  while (expanded) {
+    const before = excluded.size;
+    for (const gate of clipboard.gates) {
+      if (excluded.has(gate.id) && gate.groupId) {
+        clipboard.gates.filter((peer) => peer.groupId === gate.groupId).forEach((peer) => excluded.add(peer.id));
+      }
+      if (excluded.has(gate.parent) && gate.parent !== "root") excluded.add(gate.id);
+    }
+    expanded = excluded.size !== before;
+  }
+  if (excluded.has(root.id)) {
+    message("最上位ゲートの軸チャンネルを貼り付け先で確認できません。サンプルのチャンネル構成を確認してください。", true);
+    return;
+  }
+  if (excluded.size && clipboard.mode === "cut") {
+    message(`切り取った階層の一部（${excluded.size}ゲート）は貼り付け先に軸チャンネルがないため、貼り付けを中止しました。チャンネルが揃ったサンプルを選んでください。`, true);
+    return;
+  }
+  const compatible = clipboard.gates.filter((gate) => !excluded.has(gate.id));
+  const ids = new Map(compatible.map((gate) => [gate.id, uid()]));
   const groupIds = new Map<string, string>();
   const uniqueSiblingName = (base: string, targetParentId: string) => {
     let name = `${base} コピー`;
@@ -2147,7 +2188,7 @@ function pasteGateBranch(parentId: string, targetSampleId: string) {
     while (taken(name)) name = `${base} コピー ${suffix++}`;
     return name;
   };
-  const copied = clipboard.gates.map((gate) => {
+  const copied = compatible.map((gate) => {
     const parentWasCopied = ids.has(gate.parent);
     const nextParent = ids.get(gate.parent) ?? parentId;
     const scope = gateScope(gate) === "global" && targetScope === "global" ? "global" : "sample";
@@ -2161,6 +2202,8 @@ function pasteGateBranch(parentId: string, targetSampleId: string) {
       ...rest,
       id: ids.get(gate.id)!,
       parent: nextParent,
+      x: { ...gate.x, channel: mappedAxes.get(gate.id)!.x },
+      y: { ...gate.y, channel: mappedAxes.get(gate.id)!.y },
       sampleId: targetSampleId,
       scope,
       ...(groupId ? { groupId } : {}),
@@ -2177,7 +2220,7 @@ function pasteGateBranch(parentId: string, targetSampleId: string) {
   gateSelectionAnchor = { id: pastedRoot, sampleId: targetSampleId };
   if (clipboard.mode === "cut") gateClipboard = undefined;
   changed();
-  message(`ゲートを「${parent?.name ?? "All events"}」の下に貼り付けました。`);
+  message(`ゲートを「${parent?.name ?? "All events"}」の下に貼り付けました。${excluded.size ? ` チャンネル不一致の${excluded.size}ゲートと子分画は除外しました。` : ""}`);
 }
 function changeGateScope(
   g: Gate,
