@@ -36,9 +36,3 @@ GlobalとNormalは別々のワークシートです。Globalで共通の分画�
 ## 対応範囲
 
 FACSDiva XMLから、選択したワークシートの対応ゲート・プロット配置・軸設定・Compensation設定を取り込みます。DIVAのすべてのゲートや表示要素には対応していないため、取り込み後にゲートと軸を確認してください。FlowJo `.wsp` の読み込みには対応していません。
-
-## ライセンス
-
-Copyright © 2026 Gacky1031。FlowDaJo独自のソースコードは GNU General Public License v3.0 のみ（`GPL-3.0-only`）で提供します。利用条件はリポジトリ直下の [`LICENSE`](LICENSE) を参照してください。既にMIT Licenseで配布された版の利用許諾は、今回の変更によって撤回されません。
-
-R、flowCoreとその依存パッケージ、Windows版に含まれるMicrosoft WebView2 Runtimeには、それぞれのライセンスが適用されます。バージョンとライセンスの一覧は [`r-manifest.json`](src-tauri/runtime/r-manifest.json) と [`THIRD-PARTY-NOTICES.md`](src-tauri/runtime/THIRD-PARTY-NOTICES.md) を確認してください。
