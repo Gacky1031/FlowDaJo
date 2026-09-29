@@ -1,7 +1,7 @@
 """Verify the portable ZIP against its staging directory and emit SHA-256 records."""
 import hashlib, json, sys, zipfile
 from pathlib import Path
-version = sys.argv[1] if len(sys.argv)>1 else "0.4.1"
+version = sys.argv[1] if len(sys.argv)>1 else json.loads((Path(__file__).resolve().parent.parent/"package.json").read_text(encoding="utf-8"))["version"]
 root=Path(__file__).resolve().parent.parent
 folder=Path(sys.argv[2]).resolve() if len(sys.argv)>2 else root/"release"/f"FlowDaJo-{version}"
 archive=Path(sys.argv[3]).resolve() if len(sys.argv)>3 else root/"release"/f"FlowDaJo-{version}-windows-x64-portable.zip"

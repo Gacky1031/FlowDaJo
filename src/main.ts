@@ -83,6 +83,16 @@ let sampleSearch = "";
 let populationSearch = "";
 const selectedCards = new Set<string>();
 const selectedWidgets = new Set<string>();
+const selectedGates = new Set<string>();
+let gateSelectionAnchor: { id: string; sampleId: string } | null = null;
+let gateClipboard: { mode: "copy" | "cut"; rootId: string; sourceSampleId: string; gates: Gate[] } | undefined;
+const sampleSidebarWidthKey = "flowdajo-sample-sidebar-width";
+let sampleSidebarWidth = (() => {
+  try {
+    const saved = Number(localStorage.getItem(sampleSidebarWidthKey));
+    return Number.isFinite(saved) && saved >= 220 && saved <= 700 ? saved : 220;
+  } catch { return 220; }
+})();
 const compensationDrafts = new Map<string, Compensation>();
 const compensationDraftKey = (widget: CompensationWidget, target: Sample) => `${widget.id}\u0000${target.id}`;
 function compensationDraft(widget: CompensationWidget, target: Sample): Compensation {
@@ -438,6 +448,56 @@ function updateSidebarVisibility() {
     leftButton.setAttribute("aria-pressed", String(!leftSidebarVisible));
   }
 }
+function wireSampleSidebarResize() {
+  const shell = document.querySelector<HTMLElement>(".shell");
+  const handle = document.querySelector<HTMLElement>("#sample-sidebar-resize");
+  if (!shell || !handle) return;
+  const maxWidth = () => Math.max(220, Math.min(700, Math.floor(window.innerWidth * .45)));
+  const apply = (value: number, persist = false) => {
+    sampleSidebarWidth = Math.min(maxWidth(), Math.max(220, Math.round(value)));
+    shell.style.setProperty("--sample-sidebar-width", `${sampleSidebarWidth}px`);
+    handle.setAttribute("aria-valuenow", String(sampleSidebarWidth));
+    handle.setAttribute("aria-valuemax", String(maxWidth()));
+    if (persist) {
+      try { localStorage.setItem(sampleSidebarWidthKey, String(sampleSidebarWidth)); } catch { /* Storage may be disabled. */ }
+    }
+  };
+  handle.onpointerdown = (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const pointer = event as PointerEvent;
+    const shellLeft = shell.getBoundingClientRect().left;
+    const oldSelection = document.body.style.userSelect;
+    document.body.style.userSelect = "none";
+    handle.classList.add("dragging");
+    handle.setPointerCapture(pointer.pointerId);
+    const move = (next: PointerEvent) => {
+      if (next.pointerId === pointer.pointerId) apply(next.clientX - shellLeft);
+    };
+    const finish = (next: PointerEvent) => {
+      if (next.pointerId !== pointer.pointerId) return;
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", finish);
+      handle.removeEventListener("pointercancel", finish);
+      handle.classList.remove("dragging");
+      document.body.style.userSelect = oldSelection;
+      apply(sampleSidebarWidth, true);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", finish);
+    handle.addEventListener("pointercancel", finish);
+  };
+  handle.onkeydown = (event) => {
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      event.preventDefault();
+      apply(sampleSidebarWidth + (event.key === "ArrowRight" ? 20 : -20), true);
+    } else if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      apply(event.key === "Home" ? 220 : maxWidth(), true);
+    }
+  };
+  apply(sampleSidebarWidth);
+}
 function normalizeWorksheetPlots(ws = sheet()) {
   const mode = ws.mode ?? "global";
   ws.mode = mode;
@@ -742,7 +802,7 @@ function statisticsWidgetContents(widget: StatisticsWidget) {
       if (column.key === "total") return fmt(s.percentTotal);
       return fmt(s.medians[column.key.slice(4)] ?? null);
     });
-    return `<tr data-pop="${esc(s.id)}" data-sample="${esc(targetSampleId)}"><td class="population-cell">${gate ? `<button type="button" class="gate-color-swatch" data-gate-color="${esc(gate.id)}" style="--swatch-color:${esc(color)}" title="${esc(gate.name)}の色を変更" aria-label="${esc(gate.name)}の色を変更"></button>` : '<span class="population-color-placeholder" aria-hidden="true"></span>'}<span>${esc(s.name)}</span>${gate ? `<button type="button" class="rename-pop" data-rename-pop="${esc(gate.id)}" title="${esc(gate.name)}の名前を変更" aria-label="${esc(gate.name)}の名前を変更">✎</button>` : ""}</td>${values.map((value) => `<td>${value}</td>`).join("")}</tr>`;
+    return `<tr class="${selectedGates.has(s.id) ? "selected-gate" : ""}" aria-selected="${selectedGates.has(s.id)}" data-pop="${esc(s.id)}" data-sample="${esc(targetSampleId)}"><td class="population-cell">${gate ? `<button type="button" class="gate-color-swatch" data-gate-color="${esc(gate.id)}" style="--swatch-color:${esc(color)}" title="${esc(gate.name)}の色を変更" aria-label="${esc(gate.name)}の色を変更"></button>` : '<span class="population-color-placeholder" aria-hidden="true"></span>'}<span>${esc(s.name)}</span>${gate ? `<button type="button" class="rename-pop" data-rename-pop="${esc(gate.id)}" title="${esc(gate.name)}の名前を変更" aria-label="${esc(gate.name)}の名前を変更">✎</button>` : ""}</td>${values.map((value) => `<td>${value}</td>`).join("")}</tr>`;
   }).join("");
   return `<div class="statistics-table-wrap"><table><thead><tr><th>Population</th>${columns.map((column) => `<th>${esc(column.label)}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>`;
 }
@@ -853,7 +913,7 @@ function tree() {
           ),
           stat = data.stats[s.id]?.find((st) => st.id === id);
         return (
-          `<div class="population ${g && !gateMatches(g) ? "context-only" : ""} ${sampleId === s.id && project.selectedGate === id ? "selected" : ""}" draggable="true" data-pop="${esc(id)}" data-sample="${esc(s.id)}" style="padding-left:${12 + depth * 16}px" title="${esc(["All events", ...(g ? pathFor(project, g.id, s.id) : [])].join(" / "))}"><span>◇ ${esc(g?.name ?? "All events")}</span>${g ? `<i class="scope-badge">${gateScope(g) === "global" ? "全体" : "個別"}</i>` : ""}<small>${pending ? "…" : fmt(stat?.count)}</small></div>` +
+          `<div class="population ${g && !gateMatches(g) ? "context-only" : ""} ${selectedGates.has(id) ? "selected-gate" : ""} ${sampleId === s.id && project.selectedGate === id ? "selected" : ""}" aria-selected="${selectedGates.has(id)}" draggable="true" data-pop="${esc(id)}" data-sample="${esc(s.id)}" style="padding-left:${12 + depth * 16}px" title="${esc(["All events", ...(g ? pathFor(project, g.id, s.id) : [])].join(" / "))}"><span>◇ ${esc(g?.name ?? "All events")}</span>${g ? `<i class="scope-badge">${gateScope(g) === "global" ? "全体" : "個別"}</i>` : ""}<small>${pending ? "…" : fmt(stat?.count)}</small></div>` +
           project.gates
             .filter(
               (g) =>
@@ -979,6 +1039,9 @@ function positionToolbarMenu(menu: HTMLDetailsElement) {
 
 function render() {
   normalizeWorksheetPlots();
+  const currentGateIds = new Set(project.gates.map((gate) => gate.id));
+  for (const id of selectedGates) if (!currentGateIds.has(id)) selectedGates.delete(id);
+  if (gateSelectionAnchor && !currentGateIds.has(gateSelectionAnchor.id)) gateSelectionAnchor = null;
   const currentWidgetIds = new Set((sheet().widgets ?? []).map((widget) => widget.id));
   for (const id of selectedWidgets) if (!currentWidgetIds.has(id)) selectedWidgets.delete(id);
   // An async load/analyze can finish just after a user opens the axis dialog.
@@ -1001,7 +1064,7 @@ function render() {
   const worksheetItemCount = sheet().plots.length + widgets.length;
   const gridColumns = Math.min(8, Math.max(1, Math.ceil(Math.sqrt(Math.max(1, worksheetItemCount)))));
   const gridRows = Math.min(20, Math.max(1, Math.ceil(Math.max(1, worksheetItemCount) / gridColumns)));
-  app.innerHTML = `<header><strong>FlowDaJo <span>WORKSPACE</span></strong><input id="experiment" value="${esc(project.name)}" aria-label="Experiment name"><span class="spacer"></span><span>R / flowCore · 0.4.1</span></header><nav class="toolbar"><button id="import" class="primary">＋ FCS</button><button id="folder">DIVAフォルダ</button><button id="diva">DIVA XML</button><button id="demo">デモ</button><span class="divider"></span><button id="load">開く</button><button id="save">保存</button><button id="undo" ${history.length ? "" : "disabled"} title="Ctrl+Z">↶ 戻す</button><button id="redo" ${future.length ? "" : "disabled"} title="Ctrl+Y">↷ やり直す</button><span class="spacer"></span><button id="batch" title="個別ゲートの階層を他サンプルへコピー">ゲート階層コピー</button><button id="csv" title="全サンプル・全分画の統計をCSVで出力">統計 CSV</button><button id="pdf">Worksheet PDF</button><button id="report">全サンプル report</button><button id="template" title="現在のワークシートとゲート定義だけをテンプレート保存">テンプレート</button><button id="toggle-properties" title="軸・補正・分画の詳細設定">解析設定</button></nav><div class="shell"><aside class="browser"><h2>Samples & populations <span>${project.samples.length}</span></h2><div id="tree">${tree()}</div><div class="hint tree-help">集団をダブルクリック、またはワークシートへドラッグしてプロットを追加。Globalは1サンプル、Normalは複数サンプルを比較します。</div><button id="show-population">選択集団をプロットに追加</button></aside><main><div class="sheet-tabs">${project.worksheets!.map((s) => `<button data-sheet="${s.id}" class="${s.id === sheet().id ? "active" : ""}">${esc(s.name)} <small>${s.mode === "normal" ? "Normal" : "Global"} · ${s.plots.length}</small></button>`).join("")}<button id="new-sheet" title="ワークシートを追加">＋</button><button id="clone-sheet" title="ワークシートを複製">⧉</button></div><div class="workspace-heading"><input id="sheet-name" value="${esc(sheet().name)}" aria-label="Worksheet name"><div class="sheet-mode" aria-label="ワークシートモード"><span>Mode:</span><button type="button" data-sheet-mode="global" class="${worksheetMode() === "global" ? "active" : ""}" title="選択サンプルを全プロットへ一括適用">Global</button><button type="button" data-sheet-mode="normal" class="${worksheetMode() === "normal" ? "active" : ""}" title="サンプルごとに固定したプロットを比較">Normal</button></div><button id="add-plot" class="primary">＋ Plot</button><button id="add-print-page" title="A4の印刷範囲を追加">＋ A4ページ</button><details class="widget-add-menu"><summary title="ワークシートウィジェットを追加">＋ ウィジェット</summary><div><button id="statistics-widget-settings" type="button">Population statistics</button><button id="compensation-widget-add" type="button">Compensation調整</button></div></details><details class="worksheet-actions-menu"><summary>解析操作 ▾</summary><div><button id="standard-expansion" type="button" title="FSC/SSCの定型展開を追加">FSC / SSC 定型展開</button><button id="compensation-expansion" type="button" title="FSC-Aを横軸、選択蛍光を縦軸にしたコンペ調整用プロットを作成">Comp定型解析</button><button id="batch-plots-sheet" type="button" title="選択したプロット・ウィジェットを他サンプルへ展開" ${worksheetMode() === "normal" ? "" : "disabled"}>Normal 選択項目を展開</button></div></details><div class="grid-arrange-control"><button id="arrange" title="各プロットを最も近いグリッドに揃える">グリッド整列</button><details class="grid-arrange-menu"><summary aria-label="グリッド配置の行数と列数を選択" title="行数と列数を指定">▾</summary><form id="grid-arrange-form"><strong>配置グリッド</strong><div class="grid-fields"><label>行<input name="rows" type="number" min="1" max="20" value="${gridRows}"></label><label>列<input name="columns" type="number" min="1" max="20" value="${gridColumns}"></label></div><label>対象<select name="scope"><option value="all">ワークシート全体</option><option value="selected">選択した項目</option></select></label><button class="primary" type="submit">この行 × 列で配置</button></form></details></div><span class="zoom-controls"><button id="zoom-out">−</button><output id="zoom-value">100%</output><button id="zoom-in">＋</button><button id="zoom-reset">1:1</button></span><span id="selection-info" class="selection-info">選択: ${selectedCards.size + selectedWidgets.size}</span><span class="spacer"></span><div class="gate-tools">${[
+  app.innerHTML = `<header><strong>FlowDaJo <span>WORKSPACE</span></strong><input id="experiment" value="${esc(project.name)}" aria-label="Experiment name"><span class="spacer"></span><span>R / flowCore · 0.4.2</span></header><nav class="toolbar"><button id="import" class="primary">＋ FCS</button><button id="folder">DIVAフォルダ</button><button id="diva">DIVA XML</button><button id="demo">デモ</button><button id="new-analysis">新規解析</button><span class="divider"></span><button id="load">開く</button><button id="save">保存</button><button id="undo" ${history.length ? "" : "disabled"} title="Ctrl+Z">↶ 戻す</button><button id="redo" ${future.length ? "" : "disabled"} title="Ctrl+Y">↷ やり直す</button><span class="spacer"></span><button id="batch" title="個別ゲートの階層を他サンプルへコピー">ゲート階層コピー</button><button id="csv" title="全サンプル・全分画の統計をCSVで出力">統計 CSV</button><button id="pdf">Worksheet PDF</button><button id="report">全サンプル report</button><button id="template" title="現在のワークシートとゲート定義だけをテンプレート保存">テンプレート</button><button id="toggle-properties" title="軸・補正・分画の詳細設定">解析設定</button></nav><div class="shell" style="--sample-sidebar-width:${sampleSidebarWidth}px"><aside class="browser"><h2>Samples & populations <span>${project.samples.length}</span></h2><div id="tree">${tree()}</div><div class="hint tree-help">集団をダブルクリック、またはワークシートへドラッグしてプロットを追加。Globalは1サンプル、Normalは複数サンプルを比較します。</div><button id="show-population">選択集団をプロットに追加</button></aside><div id="sample-sidebar-resize" class="sample-sidebar-resize" role="separator" aria-label="サンプル情報バーの幅を調整" aria-orientation="vertical" aria-valuemin="220" aria-valuemax="700" aria-valuenow="${sampleSidebarWidth}" tabindex="0" title="ドラッグまたは左右矢印キーでサンプル欄の幅を調整"></div><main><div class="sheet-tabs">${project.worksheets!.map((s) => `<button data-sheet="${s.id}" class="${s.id === sheet().id ? "active" : ""}">${esc(s.name)} <small>${s.mode === "normal" ? "Normal" : "Global"} · ${s.plots.length}</small></button>`).join("")}<button id="new-sheet" title="ワークシートを追加">＋</button><button id="clone-sheet" title="ワークシートを複製">⧉</button></div><div class="workspace-heading"><input id="sheet-name" value="${esc(sheet().name)}" aria-label="Worksheet name"><div class="sheet-mode" aria-label="ワークシートモード"><span>Mode:</span><button type="button" data-sheet-mode="global" class="${worksheetMode() === "global" ? "active" : ""}" title="選択サンプルを全プロットへ一括適用">Global</button><button type="button" data-sheet-mode="normal" class="${worksheetMode() === "normal" ? "active" : ""}" title="サンプルごとに固定したプロットを比較">Normal</button></div><button id="add-plot" class="primary">＋ Plot</button><button id="add-print-page" title="A4の印刷範囲を追加">＋ A4ページ</button><details class="widget-add-menu"><summary title="ワークシートウィジェットを追加">＋ ウィジェット</summary><div><button id="statistics-widget-settings" type="button">Population statistics</button><button id="compensation-widget-add" type="button">Compensation調整</button></div></details><details class="worksheet-actions-menu"><summary>解析操作 ▾</summary><div><button id="standard-expansion" type="button" title="FSC/SSCの定型展開を追加">FSC / SSC 定型展開</button><button id="compensation-expansion" type="button" title="FSC-Aを横軸、選択蛍光を縦軸にしたコンペ調整用プロットを作成">Comp定型解析</button><button id="batch-plots-sheet" type="button" title="選択したプロット・ウィジェットを他サンプルへ展開" ${worksheetMode() === "normal" ? "" : "disabled"}>Normal 選択項目を展開</button></div></details><div class="grid-arrange-control"><button id="arrange" title="各プロットを最も近いグリッドに揃える">グリッド整列</button><details class="grid-arrange-menu"><summary aria-label="グリッド配置の行数と列数を選択" title="行数と列数を指定">▾</summary><form id="grid-arrange-form"><strong>配置グリッド</strong><div class="grid-fields"><label>行<input name="rows" type="number" min="1" max="20" value="${gridRows}"></label><label>列<input name="columns" type="number" min="1" max="20" value="${gridColumns}"></label></div><label>対象<select name="scope"><option value="all">ワークシート全体</option><option value="selected">選択した項目</option></select></label><button class="primary" type="submit">この行 × 列で配置</button></form></details></div><span class="zoom-controls"><button id="zoom-out">−</button><output id="zoom-value">100%</output><button id="zoom-in">＋</button><button id="zoom-reset">1:1</button></span><span id="selection-info" class="selection-info">選択: ${selectedCards.size + selectedWidgets.size}</span><span class="spacer"></span><div class="gate-tools">${[
     ["select", "選択 / 編集"],
     ["rectangle", "矩形"],
     ["polygon", "多角形"],
@@ -1042,7 +1105,7 @@ function render() {
     toolbar.insertBefore(menu, before);
     return menu;
   };
-  const files = group("ファイル", ["folder", "diva", "load", "template", "demo"], document.getElementById("undo")!);
+  const files = group("ファイル", ["new-analysis", "folder", "diva", "load", "template", "demo"], document.getElementById("undo")!);
   files.querySelector("div")!.insertAdjacentHTML("afterbegin", '<button id="save-from-menu" type="button">プロジェクトを保存…</button>');
   document.getElementById("template")!.textContent = "テンプレートを保存…";
   files.querySelector("div")!.insertAdjacentHTML("beforeend", '<button id="apply-template" type="button">テンプレートを適用…</button>');
@@ -1200,7 +1263,11 @@ function syncCompensationPlotFocus() {
       ((plot.x.channel === x && plot.y.channel === y) || (plot.x.channel === y && plot.y.channel === x)));
   });
 }
-function chooseSample(id: string) {
+function chooseSample(id: string, preserveGateSelection = false) {
+  if (!preserveGateSelection) {
+    selectedGates.clear();
+    gateSelectionAnchor = null;
+  }
   sampleId = id;
   project.selectedGate = "root";
   selectedGate = "";
@@ -1816,6 +1883,67 @@ function removePlot(c: WorksheetPlot) {
   changed();
   if (removed.length > 1) message(`選択した${removed.length}個のプロットを削除しました。`);
 }
+function gateIsDescendant(gate: Gate, ancestorId: string) {
+  let parentId = gate.parent;
+  const visited = new Set<string>();
+  while (parentId !== "root" && !visited.has(parentId)) {
+    if (parentId === ancestorId) return true;
+    visited.add(parentId);
+    const parent = project.gates.find((candidate) => candidate.id === parentId);
+    if (!parent) break;
+    parentId = parent.parent;
+  }
+  return false;
+}
+function removeGates(gates: Gate[], verb = "削除") {
+  const existing = [...new Map(gates
+    .map((gate) => project.gates.find((candidate) => candidate.id === gate.id))
+    .filter((gate): gate is Gate => !!gate)
+    .map((gate) => [gate.id, gate])).values()];
+  const topLevel = existing.filter((gate) =>
+    !existing.some((candidate) => candidate.id !== gate.id && gateIsDescendant(gate, candidate.id)));
+  const grouped = new Set<string>();
+  const roots = topLevel.filter((gate) => {
+    if (!gate.groupId) return true;
+    if (grouped.has(gate.groupId)) return false;
+    grouped.add(gate.groupId);
+    return true;
+  });
+  if (!roots.length) return;
+  remember();
+  const gateIdsBefore = new Set(project.gates.map((gate) => gate.id));
+  const branchRoots = roots.flatMap((gate) => gate.groupId
+    ? project.gates.filter((peer) => peer.groupId === gate.groupId)
+    : [gate]);
+  for (const worksheet of project.worksheets ?? []) {
+    for (const plot of worksheet.plots) {
+      const targetSampleId = plot.sampleId === "active" ? sampleId : plot.sampleId;
+      if (!targetSampleId) continue;
+      for (const gate of branchRoots) {
+        if (!gateAppliesToSample(gate, targetSampleId)) continue;
+        const oldPath = pathFor(project, gate.id, targetSampleId);
+        if (oldPath.length && oldPath.every((part, index) => plot.population[index] === part)) {
+          plot.population = pathFor(project, gate.parent, targetSampleId);
+          break;
+        }
+      }
+    }
+  }
+  for (const gate of roots) deleteBranch(project, gate);
+  const survivingGateIds = new Set(project.gates.map((item) => item.id));
+  for (const worksheet of project.worksheets ?? [])
+    for (const plot of worksheet.plots)
+      if (plot.displayGates) plot.displayGates = plot.displayGates.filter((id) => survivingGateIds.has(id));
+  const removedIds = [...gateIdsBefore].filter((id) => !survivingGateIds.has(id));
+  for (const id of removedIds) selectedGates.delete(id);
+  if (!survivingGateIds.has(selectedGate)) selectedGate = "";
+  project.selectedGate = survivingGateIds.has(project.selectedGate) ? project.selectedGate : "root";
+  gateSelectionAnchor = null;
+  changed();
+  message(roots.length > 1
+    ? `選択した${roots.length}個のゲート階層を${verb}しました。Ctrl+Zで復元できます。`
+    : `「${roots[0].name}」と子分画を${verb}しました。Ctrl+Zで復元できます。`);
+}
 function renameGate(g: Gate, input: string): boolean {
   const name = input.trim();
   if (
@@ -1945,30 +2073,7 @@ function gateColorDialog(g: Gate) {
   dialog.showModal();
 }
 function removeGate(g: Gate) {
-  remember();
-  const grouped = g.groupId
-      ? project.gates.filter((peer) => peer.groupId === g.groupId)
-      : [g],
-    removedPaths = grouped.map((peer) => pathFor(project, peer.id, peer.sampleId)),
-    parent = pathFor(project, g.parent, g.sampleId);
-  deleteBranch(project, g);
-  const survivingGateIds = new Set(project.gates.map((item) => item.id));
-  for (const ws of project.worksheets!)
-    for (const p of ws.plots)
-      if (
-        (gateScope(g) === "global" ||
-          p.sampleId === g.sampleId ||
-          (p.sampleId === "active" && gateAppliesToSample(g, sampleId))) &&
-        removedPaths.some((prefix) => prefix.every((v, i) => p.population[i] === v))
-      )
-        p.population = [...parent];
-  for (const ws of project.worksheets!)
-    for (const p of ws.plots)
-      if (p.displayGates)
-        p.displayGates = p.displayGates.filter((id) => survivingGateIds.has(id));
-  selectedGate = "";
-  changed();
-  message(`「${g.name}」と子分画を削除しました。Ctrl+Zで復元できます。`);
+  removeGates([g]);
 }
 function gateBranchForScope(g: Gate, targetSampleId: string) {
   const ids = new Set<string>([g.id]);
@@ -1997,6 +2102,82 @@ function gateBranchForScope(g: Gate, targetSampleId: string) {
     }
   }
   return project.gates.filter((candidate) => ids.has(candidate.id));
+}
+function copyGateBranch(gate: Gate, sourceSampleId: string, mode: "copy" | "cut") {
+  const source = sample(sourceSampleId);
+  if (!source) {
+    message("ゲートの元サンプルを確認できません。", true);
+    return;
+  }
+  gateClipboard = {
+    mode,
+    rootId: gate.id,
+    sourceSampleId: source.id,
+    gates: structuredClone(gateBranchForScope(gate, source.id)),
+  };
+  if (mode === "cut") removeGates([gate], "切り取り");
+  else message(`「${gate.name}」と子分画をコピーしました。貼り付け先の親集団を右クリックしてください。`);
+}
+function canPasteGateBranch(parentId: string, targetSampleId: string) {
+  const clipboard = gateClipboard;
+  const target = sample(targetSampleId);
+  const parent = parentId === "root" ? undefined : project.gates.find((gate) => gate.id === parentId);
+  if (!clipboard || !target || (parentId !== "root" && (!parent || !gateAppliesToSample(parent, targetSampleId)))) return false;
+  const root = clipboard.gates.find((gate) => gate.id === clipboard.rootId);
+  if (!root || (gateScope(root) === "global" && parent && gateScope(parent) !== "global")) return false;
+  return clipboard.gates.every((gate) => target.channels.some((channel) => channel.id === gate.x.channel) &&
+    target.channels.some((channel) => channel.id === gate.y.channel));
+}
+function pasteGateBranch(parentId: string, targetSampleId: string) {
+  const clipboard = gateClipboard;
+  if (!clipboard || !canPasteGateBranch(parentId, targetSampleId)) {
+    message("貼り付け先の親集団またはサンプルのチャンネルが、コピー元と一致しません。", true);
+    return;
+  }
+  const parent = parentId === "root" ? undefined : project.gates.find((gate) => gate.id === parentId);
+  const root = clipboard.gates.find((gate) => gate.id === clipboard.rootId)!;
+  const targetScope = parent ? gateScope(parent) : "global";
+  const ids = new Map(clipboard.gates.map((gate) => [gate.id, uid()]));
+  const groupIds = new Map<string, string>();
+  const uniqueSiblingName = (base: string, targetParentId: string) => {
+    let name = `${base} コピー`;
+    let suffix = 2;
+    const taken = (candidate: string) => project.gates.some((gate) => gate.parent === targetParentId &&
+      gate.name === candidate && gateAppliesToSample(gate, targetSampleId));
+    while (taken(name)) name = `${base} コピー ${suffix++}`;
+    return name;
+  };
+  const copied = clipboard.gates.map((gate) => {
+    const parentWasCopied = ids.has(gate.parent);
+    const nextParent = ids.get(gate.parent) ?? parentId;
+    const scope = gateScope(gate) === "global" && targetScope === "global" ? "global" : "sample";
+    let groupId = gate.groupId;
+    if (groupId) {
+      if (!groupIds.has(groupId)) groupIds.set(groupId, uid());
+      groupId = groupIds.get(groupId)!;
+    }
+    const { divaSourceId: _divaSourceId, divaTemplate: _divaTemplate, ...rest } = gate;
+    return {
+      ...rest,
+      id: ids.get(gate.id)!,
+      parent: nextParent,
+      sampleId: targetSampleId,
+      scope,
+      ...(groupId ? { groupId } : {}),
+      name: parentWasCopied ? gate.name : uniqueSiblingName(gate.name, parentId),
+    } satisfies Gate;
+  });
+  remember();
+  project.gates.push(...copied);
+  const pastedRoot = ids.get(root.id)!;
+  project.selectedGate = pastedRoot;
+  selectedGate = pastedRoot;
+  selectedGates.clear();
+  selectedGates.add(pastedRoot);
+  gateSelectionAnchor = { id: pastedRoot, sampleId: targetSampleId };
+  if (clipboard.mode === "cut") gateClipboard = undefined;
+  changed();
+  message(`ゲートを「${parent?.name ?? "All events"}」の下に貼り付けました。`);
 }
 function changeGateScope(
   g: Gate,
@@ -2170,6 +2351,83 @@ function individualizeGateDialog(g: Gate, targetSampleId: string | undefined) {
   });
   dialog.showModal();
 }
+function syncGateSelection() {
+  document.querySelectorAll<HTMLElement>(".population[data-pop], tr[data-pop]").forEach((row) => {
+    row.classList.toggle("selected-gate", selectedGates.has(row.dataset.pop ?? ""));
+    row.setAttribute("aria-selected", String(selectedGates.has(row.dataset.pop ?? "")));
+  });
+}
+function selectGateRow(row: HTMLElement, event?: MouseEvent) {
+  const id = row.dataset.pop ?? "";
+  const targetSampleId = row.dataset.sample ?? sampleId;
+  if (!id || id === "root") {
+    selectedGates.clear();
+    gateSelectionAnchor = null;
+    syncGateSelection();
+    return;
+  }
+  const additive = !!event && (event.ctrlKey || event.metaKey);
+  if (event?.shiftKey && gateSelectionAnchor?.sampleId === targetSampleId) {
+    const container = row.closest<HTMLElement>("#tree,[data-statistics-widget]") ?? document.body;
+    const rows = [...container.querySelectorAll<HTMLElement>(".population[data-pop][data-sample],tr[data-pop][data-sample]")]
+      .filter((candidate) => candidate.dataset.sample === targetSampleId && candidate.dataset.pop !== "root");
+    const start = rows.findIndex((candidate) => candidate.dataset.pop === gateSelectionAnchor!.id);
+    const end = rows.indexOf(row);
+    if (start >= 0 && end >= 0) {
+      if (!additive) selectedGates.clear();
+      rows.slice(Math.min(start, end), Math.max(start, end) + 1).forEach((candidate) => selectedGates.add(candidate.dataset.pop!));
+    } else selectedGates.add(id);
+  } else if (additive) {
+    if (selectedGates.has(id)) selectedGates.delete(id);
+    else selectedGates.add(id);
+    gateSelectionAnchor = { id, sampleId: targetSampleId };
+  } else {
+    selectedGates.clear();
+    selectedGates.add(id);
+    gateSelectionAnchor = { id, sampleId: targetSampleId };
+  }
+  syncGateSelection();
+}
+function prepareGateContextSelection(row: HTMLElement) {
+  const id = row.dataset.pop ?? "";
+  if (id === "root") return;
+  if (!selectedGates.has(id)) selectGateRow(row);
+}
+function gateDeleteAction(gate: Gate): MenuAction {
+  const selected = selectedGates.has(gate.id)
+    ? project.gates.filter((candidate) => selectedGates.has(candidate.id))
+    : [gate];
+  return {
+    label: selected.length > 1 ? `選択した${selected.length}ゲートと子分画を削除` : "ゲートと子分画を削除",
+    run: () => removeGates(selected),
+    danger: true,
+  };
+}
+function plotDeleteAction(plot: WorksheetPlot): MenuAction {
+  const selected = selectedCards.has(plot.id)
+    ? sheet().plots.filter((candidate) => selectedCards.has(candidate.id))
+    : [plot];
+  return {
+    label: selected.length > 1 ? `選択した${selected.length}プロットを削除` : "プロットを削除",
+    run: () => removePlot(plot),
+    danger: true,
+  };
+}
+function rootPopulationActions(sampleTargetId: string): MenuAction[] {
+  const actions: MenuAction[] = [];
+  if (gateClipboard) actions.push({
+    label: "クリップボードのゲートをAll eventsへ貼り付け",
+    disabled: !canPasteGateBranch("root", sampleTargetId),
+    run: () => pasteGateBranch("root", sampleTargetId),
+  });
+  const selected = project.gates.filter((gate) => selectedGates.has(gate.id));
+  if (selected.length) actions.push({
+    label: `選択した${selected.length}ゲートと子分画を削除`,
+    run: () => removeGates(selected),
+    danger: true,
+  });
+  return actions;
+}
 function preparePlotContextSelection(plot: WorksheetPlot) {
   if (!selectedCards.has(plot.id)) {
     selectedCards.clear();
@@ -2247,6 +2505,14 @@ function gateMenu(g: Gate, x: number, y: number, c?: WorksheetPlot, widget?: Wor
     // plot-level controls reachable there, especially displayed-gate settings.
     ...(c ? plotSettingsActions() : []),
     ...(widget ? [{ label: "Normal: 選択項目を他サンプルへ展開…", disabled: worksheetMode() !== "normal", run: () => batchWorksheetItemsToSamples() }] : []),
+    { label: "ゲート階層をコピー", run: () => copyGateBranch(g, targetSampleId ?? g.sampleId, "copy") },
+    { label: "ゲート階層を切り取り", run: () => copyGateBranch(g, targetSampleId ?? g.sampleId, "cut") },
+    ...(gateClipboard ? [{
+      label: `クリップボードのゲートを「${g.name}」の下へ貼り付け`,
+      disabled: !canPasteGateBranch(g.id, targetSampleId ?? g.sampleId),
+      run: () => pasteGateBranch(g.id, targetSampleId ?? g.sampleId),
+    }] : []),
+    ...(c ? [plotDeleteAction(c)] : []),
     { label: "集団名を変更…", run: () => renameGateDialog(g) },
     gateScope(g) === "global"
       ? {
@@ -2262,7 +2528,7 @@ function gateMenu(g: Gate, x: number, y: number, c?: WorksheetPlot, widget?: Wor
       label: "このサンプルの統計をCSV出力…",
       run: () => void exportStatistics(targetSampleId ?? g.sampleId),
     },
-    { label: "ゲートと子分画を削除", run: () => removeGate(g), danger: true },
+    gateDeleteAction(g),
   ];
   contextMenu(
     x,
@@ -2284,6 +2550,7 @@ function openPlotMenu(c: WorksheetPlot, e: MouseEvent, hits: Gate[]) {
       "操作する分画を選択",
       [
         ...plotSettingsActions(),
+        plotDeleteAction(c),
         ...hits.map((g) => ({
           label: g.name,
           run: () => gateMenu(g, e.clientX, e.clientY, c),
@@ -2319,7 +2586,7 @@ function openPlotMenu(c: WorksheetPlot, e: MouseEvent, hits: Gate[]) {
     { label: "図をPDFで保存…", run: () => void exportPlot(c, "pdf") },
     { label: "図をSVGで保存…", run: () => void exportPlot(c, "svg") },
     { label: "プロットを複製", run: () => duplicatePlot(c) },
-    { label: "プロットを削除", run: () => removePlot(c), danger: true },
+    plotDeleteAction(c),
   ]);
 }
 async function exportStatistics(id?: string) {
@@ -2361,6 +2628,48 @@ async function exportPlot(c: WorksheetPlot, format: "pdf" | "svg") {
 function on(id: string, fn: () => void) {
   document.getElementById(id)?.addEventListener("click", fn);
 }
+async function startNewAnalysis() {
+  if (operation) {
+    message("処理中のため、新しい解析を開始できません。完了後にもう一度お試しください。", true);
+    return;
+  }
+  if (dirty || project.samples.length || project.gates.length || projectPath) {
+    const prompt = `現在の解析を閉じて、新しい空の解析を開始しますか？${dirty ? "未保存の変更は破棄されます。" : ""}`;
+    const proceed = isTauri()
+      ? await confirm(prompt, { title: "新しい解析" })
+      : window.confirm(prompt);
+    if (!proceed) return;
+  }
+  jobs.invalidate();
+  clearRecovery();
+  project = migrate({ schema: "flowdesk-r/1", name: "Untitled experiment", samples: [], gates: [], selectedGate: "root", notes: "", importWarnings: [] });
+  projectPath = null;
+  sampleId = "";
+  activeCard = "";
+  selectedGate = "";
+  focusedCard = "";
+  selectedCards.clear();
+  selectedWidgets.clear();
+  selectedGates.clear();
+  gateSelectionAnchor = null;
+  gateClipboard = undefined;
+  compensationDrafts.clear();
+  history = [];
+  future = [];
+  dirty = false;
+  failed = false;
+  pending = false;
+  gesture = false;
+  tool = "select";
+  gateScopeMode = "global";
+  gateFilter = "all";
+  sampleSearch = "";
+  populationSearch = "";
+  printLayoutMode = false;
+  data = { plots: {}, stats: {}, errors: {}, workerPid: data.workerPid };
+  render();
+  message("新しい解析を開始しました。FCSまたはDIVAデータを読み込んでください。");
+}
 async function deleteWorksheet(id: string) {
   const current = project.worksheets!.find((item) => item.id === id);
   if (!current) return;
@@ -2395,6 +2704,7 @@ async function deleteWorksheet(id: string) {
   message(remaining.length ? `「${current.name}」を削除しました。` : `「${current.name}」を削除し、空のワークシートを作成しました。`);
 }
 function wire() {
+  wireSampleSidebarResize();
   const sampleSortSelect = document.querySelector<HTMLSelectElement>("#sample-sort")!;
   sampleSortSelect.onchange = () => {
     remember();
@@ -2429,6 +2739,7 @@ function wire() {
         changed();
       }),
   );
+  on("new-analysis", () => void startNewAnalysis());
   on("import", () => void importData("fcs"));
   on("folder", () => void importData("folder"));
   on("diva", () => void importData("diva"));
@@ -2837,7 +3148,9 @@ function wire() {
     if (!el) return;
     const id = el.dataset.sample ?? sampleId;
     if (el.dataset.pop !== undefined) {
-      if (id !== sampleId) chooseSample(id);
+      const preserveGateSelection = e.ctrlKey || e.metaKey || e.shiftKey;
+      if (id !== sampleId) chooseSample(id, preserveGateSelection);
+      selectGateRow(el, e);
       project.selectedGate = el.dataset.pop;
       const breadcrumb = document.querySelector<HTMLElement>(".population-breadcrumb");
       if (breadcrumb) breadcrumb.textContent = ["All events", ...pathFor(project, project.selectedGate, id)].join(" / ");
@@ -3017,6 +3330,7 @@ function wire() {
         [
           ...plotSettingsActions(),
           { label: "プロット表示設定…", run: () => plotOptions(plot) },
+          plotDeleteAction(plot),
         ],
       );
     });
@@ -3065,12 +3379,27 @@ function wire() {
       const statisticsContainer = el.closest<HTMLElement>("[data-statistics-widget]");
       const sourceWidget = sheet().widgets?.find((item) => item.id === statisticsContainer?.dataset.statisticsWidget);
       if (sourceWidget) prepareWidgetContextSelection(sourceWidget);
+      const targetSampleId = el.dataset.sample ?? sampleId;
       const g = project.gates.find(
         (g) =>
           g.id === el.dataset.pop &&
-          gateAppliesToSample(g, el.dataset.sample ?? sampleId),
+          gateAppliesToSample(g, targetSampleId),
       );
-      if (g) { gateMenu(g, e.clientX, e.clientY, undefined, sourceWidget, el.dataset.sample); return; }
+      if (g) {
+        prepareGateContextSelection(el);
+        project.selectedGate = g.id;
+        selectedGate = g.id;
+        gateMenu(g, e.clientX, e.clientY, undefined, sourceWidget, targetSampleId);
+        return;
+      }
+      if (el.dataset.pop === "root") {
+        const actions = rootPopulationActions(targetSampleId);
+        if (sourceWidget) actions.push({ label: "Normal: 選択項目を他サンプルへ展開…", disabled: worksheetMode() !== "normal", run: () => batchWorksheetItemsToSamples() });
+        if (actions.length) {
+          contextMenu(e.clientX, e.clientY, "All events", actions);
+          return;
+        }
+      }
       if (!sourceWidget) return;
     }
     const widgetElement = (e.target as Element).closest<HTMLElement>("[data-statistics-widget],[data-compensation-widget]");
@@ -4553,10 +4882,12 @@ document.addEventListener("keydown", (e) => {
     tool = "select";
     render();
   }
-  if (!editing && e.key === "Delete" && selectedGate) {
-    const g = project.gates.find((g) => g.id === selectedGate);
-    if (g) {
-      removeGate(g);
+  if (!editing && e.key === "Delete" && (selectedGates.size || selectedGate)) {
+    const selected = project.gates.filter((gate) => selectedGates.has(gate.id));
+    if (selected.length) removeGates(selected);
+    else {
+      const g = project.gates.find((gate) => gate.id === selectedGate);
+      if (g) removeGate(g);
     }
   }
 });

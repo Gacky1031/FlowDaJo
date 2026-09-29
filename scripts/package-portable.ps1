@@ -1,11 +1,13 @@
 param(
+  [string]$Version,
   [switch]$SkipArchive,
   [string]$DestinationPath,
   [string]$ArchivePath
 )
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot -Parent)
-$destination = if ($DestinationPath) { $DestinationPath } else { Join-Path (Get-Location) 'release\FlowDaJo-0.4.1' }
+if (-not $Version) { $Version = (Get-Content 'src-tauri\tauri.conf.json' -Raw | ConvertFrom-Json).version }
+$destination = if ($DestinationPath) { $DestinationPath } else { Join-Path (Get-Location) "release\FlowDaJo-$Version" }
 $destination = [System.IO.Path]::GetFullPath($destination)
 New-Item -ItemType Directory -Path (Join-Path $destination 'r') -Force | Out-Null
 Copy-Item -LiteralPath 'src-tauri\target\release\flowdesk-tauri.exe' -Destination (Join-Path $destination 'FlowDaJo.exe') -Force
@@ -17,9 +19,9 @@ foreach ($folder in @('R','WebView2','sources')) {
 }
 Copy-Item -LiteralPath 'src-tauri\runtime\r-manifest.json','src-tauri\runtime\THIRD-PARTY-NOTICES.md' -Destination (Join-Path $destination 'runtime') -Force
 New-Item -ItemType Directory -Path (Join-Path $destination 'docs') -Force | Out-Null
-Copy-Item -LiteralPath 'docs\ARCHITECTURE.md','docs\VALIDATION-0.4.1.md','docs\UI-INTERACTION.md' -Destination (Join-Path $destination 'docs') -Force
+Copy-Item -LiteralPath 'docs\ARCHITECTURE.md',"docs\VALIDATION-$Version.md",'docs\UI-INTERACTION.md' -Destination (Join-Path $destination 'docs') -Force
 if (-not $SkipArchive) {
-  $archive = if ($ArchivePath) { $ArchivePath } else { Join-Path (Get-Location) 'release\FlowDaJo-0.4.1-windows-x64-portable.zip' }
+  $archive = if ($ArchivePath) { $ArchivePath } else { Join-Path (Get-Location) "release\FlowDaJo-$Version-windows-x64-portable.zip" }
   $archive = [System.IO.Path]::GetFullPath($archive)
   Compress-Archive -LiteralPath $destination -DestinationPath $archive -Force
   Get-FileHash $archive -Algorithm SHA256

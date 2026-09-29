@@ -406,7 +406,15 @@ heat_colors <- function(values, points=FALSE) {
   ramp<-colorRamp(c(if(points)"#345b9e" else "#f6f8fa","#2f86a7","#209e70","#f4be30","#c4302b"))
   rgb(ramp(q),maxColorValue=255)
 }
-draw_card <- function(card,d,compact=FALSE) {
+print_channel_label <- function(sample, channel) {
+  entries <- sample$channels %||% list()
+  match <- Filter(function(item) identical(item$id, channel), entries)
+  if (!length(match)) return(channel)
+  label <- as.character(match[[1]]$label %||% channel)
+  if (!nzchar(label) || identical(label, channel)) channel else label
+}
+
+draw_card <- function(card,d,compact=FALSE,sample_info=NULL) {
   mode<-d$mode;hist_label<-switch(d$histogramNormalize,count="Count",percent="% of events",mode="% of maximum","Count")
   plot(NA,xlim=unlist(d$xRange),ylim=unlist(d$yRange),axes=FALSE,xaxs="i",yaxs="i",xlab="",ylab="",main=NULL)
   col<-d$color;alpha<-d$dotOpacity;den<-d$density;pd<-unlist(d$pointDensity)
@@ -433,8 +441,8 @@ draw_card <- function(card,d,compact=FALSE) {
     keep<-is.finite(pd)&pd<min(unlist(den$levels));if(any(keep))points(xs[keep],ys[keep],pch=16,cex=d$dotSize/5,col=adjustcolor(col,alpha.f=alpha))
   }
   draw_ticks(d,mode,!isFALSE(card$showXAxis),compact)
-  if(!isFALSE(card$showXAxis))mtext(card$x$channel,side=1,line=if(compact)2.1 else 2.6,cex=if(compact).62 else .74)
-  mtext(if(mode=="histogram")hist_label else if(mode=="cdf")"Cumulative %" else card$y$channel,side=2,line=if(compact)2.35 else 2.9,cex=if(compact).62 else .74)
+  if(!isFALSE(card$showXAxis))mtext(print_channel_label(sample_info,card$x$channel),side=1,line=if(compact)2.1 else 2.6,cex=if(compact).56 else .68)
+  mtext(if(mode=="histogram")hist_label else if(mode=="cdf")"Cumulative %" else print_channel_label(sample_info,card$y$channel),side=2,line=if(compact)2.35 else 2.9,cex=if(compact).56 else .68)
   if(!isFALSE(card$showXAxis))box(bty="l") else segments(unlist(d$xRange)[1],unlist(d$yRange)[1],unlist(d$xRange)[1],unlist(d$yRange)[2])
   if(compact) {
     mtext(substr(paste(d$sampleName,if(!isFALSE(card$showGateNames))paste(unlist(card$population),collapse=" / ")else""),1,48),side=3,line=.5,cex=.55,font=2)
@@ -495,14 +503,15 @@ fit_pdf_text <- function(value,width,cex=.7) {
     chars<-chars-1L
   paste0(substr(value,1,chars),"…")
 }
-draw_statistics_widget <- function(widget, statistics, sample_name, gates=list()) {
+draw_statistics_widget <- function(widget, statistics, sample_info, gates=list()) {
   statistics <- visible_widget_statistics(widget,statistics,gates)
+  sample_name <- sample_info$name %||% "Selected sample"
   show_events <- !identical(widget$showEvents,FALSE)
   show_parent <- !identical(widget$showPercentParent,FALSE)
   show_total <- !identical(widget$showPercentTotal,FALSE)
   mfi_channels <- unlist(widget$mfiChannels %||% list(),use.names=FALSE)
   columns <- c(if(show_events) "Events",if(show_parent) "% Parent",if(show_total) "% Total",
-    if(length(mfi_channels))paste("MFI",mfi_channels,sep=" · "))
+    if(length(mfi_channels))paste("MFI",vapply(mfi_channels,function(channel)print_channel_label(sample_info,channel),""),sep=" · "))
   values_for <- function(row) {
     values <- c(if(show_events) format(row$count,big.mark=",",scientific=FALSE),
       if(show_parent) if(is.null(row$percentParent)) "NA" else sprintf("%.2f",row$percentParent),
@@ -562,8 +571,9 @@ draw_compensation_widget <- function(widget, project, fallback_sample_id) {
   row_y <- seq(.78,.18,length.out=length(indices))
   col_x <- seq(.40,.96,length.out=length(indices))
   label_cex <- max(.38,min(.7,.72-.012*length(indices)))
-  text(.03,row_y,channels[indices],adj=0,cex=label_cex)
-  text(col_x,rep(.86,length(indices)),channels[indices],srt=45,adj=1,cex=label_cex)
+  labels <- vapply(channels,function(channel)print_channel_label(sample,channel),"")
+  text(.03,row_y,labels[indices],adj=0,cex=label_cex)
+  text(col_x,rep(.86,length(indices)),labels[indices],srt=45,adj=1,cex=label_cex)
   for(i in seq_along(indices)) for(j in seq_along(indices)) {
     x <- col_x[j]; y <- row_y[i]
     rect(x-.035,y-.025,x+.035,y+.025,border="#d5dee5",col=if(i==j)"#edf2f6"else"white")
@@ -623,8 +633,12 @@ export_print_pages <- function(req,data,cards,widgets) {
           else if(compact)c(2.8,3.3,1.9,.5) else c(3.2,3.8,2.5,.7))
         if(identical(item$kind,"plot")) {
           d <- data$plots[[value$id]]
+          sid <- value$reportSampleId %||% value$sampleId
+          if(is.null(sid)||identical(sid,"active"))sid <- req$sampleId
+          matched_sample <- Filter(function(s)identical(s$id,sid),req$project$samples)
+          report_sample <- if(length(matched_sample))matched_sample[[1]] else NULL
           if(isTRUE(value$reportPopulationMissing)) draw_missing_population(value) else {
-            draw_card(value,d,compact)
+            draw_card(value,d,compact,report_sample)
             draw_child_gates(value,d,req$project,data$stats[[d$sampleId]] %||% list())
           }
         } else if(identical(item$kind,"compensation")) {
@@ -633,8 +647,8 @@ export_print_pages <- function(req,data,cards,widgets) {
           stats_id <- value$sampleId
           if(is.null(stats_id)||identical(stats_id,"active"))stats_id <- req$sampleId
           matched <- Filter(function(s)identical(s$id,stats_id),req$project$samples)
-          name <- if(length(matched))matched[[1]]$name else "Selected sample"
-          draw_statistics_widget(value,data$stats[[stats_id]] %||% list(),name,req$project$gates %||% list())
+          sample_info <- if(length(matched))matched[[1]] else list(name="Selected sample",channels=list())
+          draw_statistics_widget(value,data$stats[[stats_id]] %||% list(),sample_info,req$project$gates %||% list())
         }
         printed <- c(printed,value$id)
       }
@@ -699,7 +713,11 @@ export_vector <- function(req,kind=c("pdf","svg"),single=FALSE) {
         par(fig=c(x1,x2,1-y2,1-y1),new=i>1,mar=if(identical(item$kind,"statistics"))c(.7,.7,1.4,.45)else if(compact)c(2.8,3.3,1.9,.5)else c(3.2,3.8,2.5,.7))
         if(identical(item$kind,"plot")) {
           d<-data$plots[[element$id]]
-          draw_card(element,d,compact)
+          sid<-element$reportSampleId %||% element$sampleId
+          if(is.null(sid)||identical(sid,"active"))sid<-req$sampleId
+          matched_sample<-Filter(function(s)identical(s$id,sid),req$project$samples)
+          report_sample<-if(length(matched_sample))matched_sample[[1]] else NULL
+          draw_card(element,d,compact,report_sample)
           draw_child_gates(element,d,req$project,data$stats[[d$sampleId]] %||% list())
          } else if(identical(item$kind,"compensation")) {
            draw_compensation_widget(element,req$project,req$sampleId)
@@ -707,8 +725,8 @@ export_vector <- function(req,kind=c("pdf","svg"),single=FALSE) {
           stats_id <- element$reportSampleId %||% element$sampleId
           if(is.null(stats_id)||identical(stats_id,"active")) stats_id<-req$sampleId
           sample_match<-Filter(function(s)identical(s$id,stats_id),req$project$samples)
-          name<-if(length(sample_match))sample_match[[1]]$name else "Selected sample"
-          draw_statistics_widget(element,data$stats[[stats_id]] %||% list(),name,req$project$gates %||% list())
+          sample_info<-if(length(sample_match))sample_match[[1]] else list(name="Selected sample",channels=list())
+          draw_statistics_widget(element,data$stats[[stats_id]] %||% list(),sample_info,req$project$gates %||% list())
         }
       }
     }
