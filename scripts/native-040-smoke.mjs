@@ -56,6 +56,7 @@ try {
   );
   const failures = [];
   page.on("pageerror", (e) => failures.push(e.message));
+  await page.locator('.toolbar-menu:has(#demo) > summary').click();
   await page.locator("#demo").click();
   await page
     .getByRole("cell", { name: "16,000", exact: true })

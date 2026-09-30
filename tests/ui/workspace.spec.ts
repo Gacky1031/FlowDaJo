@@ -151,6 +151,15 @@ test("polygon vertices, grouped quadrants, layout drag/resize and batch gates", 
   await page.getByRole("button", { name: "四分割", exact: true }).click();
   await page.mouse.click(box.x + 170, box.y + 100);
   await expect(page.locator(".statistics tbody tr")).toHaveCount(6);
+  const quadrantColorButton = page.locator('.statistics tbody [data-gate-color][aria-label*="四分ゲート全体に適用"]');
+  await expect(quadrantColorButton).toHaveCount(1);
+  await expect(page.locator(".statistics tbody .shared-quadrant-color")).toHaveCount(3);
+  await quadrantColorButton.click();
+  await page.locator('.gate-color-dialog [data-swatch="#bd4b8a"]').click();
+  const quadrantSwatchColors = await page.locator(".statistics tbody tr:nth-child(n+3) .gate-color-swatch").evaluateAll((swatches) =>
+    swatches.map((swatch) => getComputedStyle(swatch).getPropertyValue("--swatch-color").trim()),
+  );
+  expect(new Set(quadrantSwatchColors)).toEqual(new Set(["#bd4b8a"]));
   const quadrantCounts = async () =>
     Promise.all(
       (await page.locator(".statistics tbody tr").all())
@@ -195,6 +204,9 @@ test("polygon vertices, grouped quadrants, layout drag/resize and batch gates", 
   await page.locator(".sample").last().click();
   await expect(page.locator(".statistics tbody tr")).toHaveCount(6);
   expect((await quadrantCounts()).reduce((a, b) => a + b, 0)).toBe(16000);
+  await page.locator(".statistics tbody tr").nth(2).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "ゲートと子分画を削除" }).click();
+  await expect(page.locator(".statistics tbody tr")).toHaveCount(2);
   expect(failures).toEqual([]);
 });
 
@@ -474,6 +486,43 @@ test("statistics widget defaults to all populations and allows a hidden populati
   await dialog.getByRole("button", { name: "すべて表示" }).click();
   await dialog.getByRole("button", { name: "適用" }).click();
   await expect(page.locator(".statistics tbody tr")).toHaveCount(2);
+});
+
+test("statistics widget font size is adjustable and population hierarchy is explicit", async ({ page }) => {
+  await page.goto("/");
+  await clickDemo(page);
+  await expect(page.locator(".statistics")).toContainText("16,000");
+  const stage = page.locator(".plot-stage").first();
+  let box = (await stage.boundingBox())!;
+  await page.getByRole("button", { name: "矩形", exact: true }).click();
+  await page.mouse.move(box.x + 75, box.y + 90);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 180, box.y + 185, { steps: 6 });
+  await page.mouse.up();
+  await expect(page.locator(".statistics tbody tr")).toHaveCount(2);
+  box = (await stage.boundingBox())!;
+  await page.getByRole("button", { name: "矩形", exact: true }).click();
+  await page.mouse.move(box.x + 200, box.y + 90);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 290, box.y + 185, { steps: 6 });
+  await page.mouse.up();
+  await expect(page.locator(".statistics tbody tr")).toHaveCount(3);
+  const firstSibling = page.locator('.statistics tbody tr[data-pop]:has(.population-tree-name:text-is("P1"))');
+  const secondSibling = page.locator('.statistics tbody tr[data-pop]:has(.population-tree-name:text-is("P2"))');
+  await expect(firstSibling.locator(".population-cell")).toHaveAttribute("data-depth", "1");
+  await expect(firstSibling.locator(".population-tree-prefix")).toContainText("├─");
+  await expect(secondSibling.locator(".population-cell")).toHaveAttribute("data-depth", "1");
+  await expect(secondSibling.locator(".population-tree-prefix")).toContainText("└─");
+  await page.getByRole("button", { name: "統計ウィジェットの表示項目を設定" }).click();
+  const dialog = page.locator("dialog.statistics-settings-dialog");
+  await dialog.locator('[name="fontSizePt"]').fill("14");
+  await dialog.getByRole("button", { name: "適用" }).click();
+  await expect(page.locator(".statistics-table-wrap")).toHaveAttribute("style", /14pt/);
+  await clickToolbarAction(page, "#pdf");
+  const preview = page.getByRole("dialog", { name: "ワークシート印刷プレビュー" });
+  await preview.getByRole("button", { name: "PDFを保存…" }).click();
+  await expect(page.locator(".status")).toContainText("PDFを保存しました");
+  expect(statSync("artifacts/ui-worksheet.pdf").size).toBeGreaterThan(1000);
 });
 
 test("sample order supports name, import and drag ordering plus arrow navigation", async ({ page }) => {

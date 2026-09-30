@@ -1,6 +1,6 @@
 [package]
 name = "flowdesk-tauri"
-version = "0.4.2"
+version = "0.4.3"
 description = "FlowDaJo flow cytometry desktop analysis with R and flowCore"
 license = "GPL-3.0-only"
 edition = "2021"

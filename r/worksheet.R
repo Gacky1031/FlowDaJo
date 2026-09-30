@@ -495,6 +495,38 @@ visible_widget_statistics <- function(widget, statistics, gates=list()) {
   if(!length(hidden)) return(statistics)
   Filter(function(row) !statistics_population_key(row$id,gates) %in% hidden,statistics)
 }
+statistics_gate_lineage <- function(id, gates) {
+  lineage <- list(); visited <- character()
+  while(!is.null(id) && !identical(as.character(id),"root") && !as.character(id) %in% visited) {
+    gate <- gates[[match(as.character(id),vapply(gates,function(item)as.character(item$id),""))]]
+    if(is.null(gate)) break
+    lineage <- c(list(gate),lineage)
+    visited <- c(visited,as.character(id))
+    id <- gate$parent
+  }
+  lineage
+}
+statistics_tree_prefix <- function(index, lineages) {
+  lineage <- lineages[[index]]
+  if(!length(lineage)) return("")
+  ids <- vapply(lineage,function(gate)as.character(gate$id),"")
+  has_later_sibling <- rep(FALSE,length(ids))
+  if(index < length(lineages)) for(level in seq_along(ids)) {
+    for(next_index in seq.int(index+1,length(lineages))) {
+      next_ids <- vapply(lineages[[next_index]],function(gate)as.character(gate$id),"")
+      prefix_matches <- level == 1L || identical(next_ids[seq_len(level-1L)],ids[seq_len(level-1L)])
+      if(length(next_ids) >= level && prefix_matches && next_ids[[level]] != ids[[level]]) {
+        has_later_sibling[[level]] <- TRUE
+        break
+      }
+    }
+  }
+  pieces <- vapply(seq_along(ids),function(level) {
+    if(level < length(ids)) if(has_later_sibling[[level]]) "│  " else "   "
+    else if(has_later_sibling[[level]]) "├─ " else "└─ "
+  },"")
+  paste0(pieces,collapse="")
+}
 fit_pdf_text <- function(value,width,cex=.7) {
   value<-as.character(value %||% "")
   if(!nzchar(value)||strwidth(value,cex=cex)<=width)return(value)
@@ -509,6 +541,10 @@ draw_statistics_widget <- function(widget, statistics, sample_info, gates=list()
   show_events <- !identical(widget$showEvents,FALSE)
   show_parent <- !identical(widget$showPercentParent,FALSE)
   show_total <- !identical(widget$showPercentTotal,FALSE)
+  font_size_pt <- suppressWarnings(as.numeric(widget$fontSizePt %||% 9))
+  if(length(font_size_pt)!=1L || !is.finite(font_size_pt)) font_size_pt <- 9
+  font_size_pt <- max(6,min(18,font_size_pt))
+  requested_cex <- font_size_pt/12
   mfi_channels <- unlist(widget$mfiChannels %||% list(),use.names=FALSE)
   columns <- c(if(show_events) "Events",if(show_parent) "% Parent",if(show_total) "% Total",
     if(length(mfi_channels))paste("MFI",vapply(mfi_channels,function(channel)print_channel_label(sample_info,channel),""),sep=" · "))
@@ -522,24 +558,31 @@ draw_statistics_widget <- function(widget, statistics, sample_info, gates=list()
     },""))
     values
   }
+  lineages <- lapply(statistics,function(row) {
+    if(identical(as.character(row$id),"root")) list() else statistics_gate_lineage(row$id,gates)
+  })
   plot.new();plot.window(xlim=c(0,1),ylim=c(0,1),xaxs="i",yaxs="i")
-  title(main=fit_pdf_text(paste("Population statistics |",sample_name),.95,.72),cex.main=.72)
+  title(main=fit_pdf_text(paste("Population statistics |",sample_name),.95,min(1.25,requested_cex)),cex.main=min(1.25,requested_cex))
   count<-length(columns)
   name_end<-if(count) max(.29,min(.53,.66-.047*count)) else .98
   cell_width<-if(count)(.98-name_end)/count else 0
   right<-if(count) name_end+seq_len(count)*cell_width else numeric()
-  header_cex<-max(.43,min(.68,.76-.035*count))
+  header_cex<-min(requested_cex,max(.43,min(.82,.86-.035*count)))
   text(.02,.91,"Population",adj=0,font=2,cex=header_cex)
   if(count) for(j in seq_len(count))
     text(right[j],.91,fit_pdf_text(columns[j],cell_width-.014,header_cex),adj=1,font=2,cex=header_cex)
   segments(.02,.865,.98,.865,col="#ccd8df",lwd=.6)
   if(length(statistics)) {
     step<-.78/max(length(statistics),4)
-    cex<-max(.34,min(.72,step*5.4))
+    line_height<-strheight("Ag",cex=1,units="user")
+    fit_cex<-if(is.finite(line_height)&&line_height>0) .84*step/line_height else requested_cex
+    cex<-min(requested_cex,fit_cex)
     for(i in seq_along(statistics)) {
       row<-statistics[[i]]
       y<-.84-(i-1)*step
-      text(.02,y,fit_pdf_text(row$name,name_end-.04,cex),adj=0,cex=cex)
+      prefix<-statistics_tree_prefix(i,lineages)
+      name_width<-max(.04,name_end-.04-strwidth(prefix,cex=cex))
+      text(.02,y,paste0(prefix,fit_pdf_text(row$name,name_width,cex)),adj=0,cex=cex)
       vals<-values_for(row)
       if(length(vals)) for(j in seq_along(vals))
         text(right[j],y,fit_pdf_text(vals[j],cell_width-.014,cex),adj=1,cex=cex)
@@ -587,8 +630,12 @@ draw_compensation_widget <- function(widget, project, fallback_sample_id) {
 export_print_pages <- function(req,data,cards,widgets) {
   pages <- req$printPages %||% list(list(left=0,top=0,orientation="landscape"))
   if(!length(pages)) pages <- list(list(left=0,top=0,orientation="landscape"))
-  elements <- c(lapply(cards,function(value)list(kind="plot",value=value)),
-                lapply(widgets,function(value)list(kind=if(identical(value$type,"compensation"))"compensation"else"statistics",value=value)))
+  plot_elements <- lapply(cards,function(value)list(kind="plot",value=value))
+  active_plot <- Filter(function(item)identical(item$value$id,req$activePlotId %||% ""),plot_elements)
+  plot_elements <- Filter(function(item)!identical(item$value$id,req$activePlotId %||% ""),plot_elements)
+  widget_elements <- lapply(widgets,function(value)list(kind=if(identical(value$type,"compensation"))"compensation"else"statistics",value=value))
+  # The active card is raised above other plots and widgets in the worksheet.
+  elements <- c(plot_elements,widget_elements,active_plot)
   width_of <- function(item) item$value$width %||% if(item$kind %in% c("statistics","compensation"))640 else 344
   height_of <- function(item) item$value$height %||% if(identical(item$kind,"compensation"))360 else if(identical(item$kind,"statistics"))340 else 314
   files <- character(); success <- FALSE; printed <- character(); page_count <- 0L
@@ -611,8 +658,9 @@ export_print_pages <- function(req,data,cards,widgets) {
         (box$left %||% 0)+width_of(item) <= left+width-safe_margin &&
         (box$top %||% 0)+height_of(item) <= top+height-safe_margin
     },page_elements)
-    page_items <- page_items[order(vapply(page_items,function(item)item$value$top %||% 0,0),
-      vapply(page_items,function(item)item$value$left %||% 0,0))]
+    # Preserve worksheet element order when painting overlapping items. Sorting
+    # by position changes their stacking order relative to the canvas and can
+    # cover most of an earlier plot when cards overlap.
     file <- tempfile(pattern="flowdesk-page-",tmpdir=dirname(req$path),fileext=".pdf")
     files <- c(files,file)
     page_count <- page_count + 1L
@@ -669,16 +717,17 @@ export_vector <- function(req,kind=c("pdf","svg"),single=FALSE) {
   include_plots <- !identical(req$includePlots, FALSE)
   include_widgets <- isTRUE(req$includeWidgets) && !single
   cards<-req$plots %||% list()
+  print_cards<-cards
   analysis_req <- req
   analysis_req$plots <- Filter(function(card)!isTRUE(card$reportPopulationMissing),cards)
   data<-worksheet(analysis_req); if(length(data$errors)) fail(paste(unlist(data$errors),collapse="\n"))
+  widgets<-if(include_widgets) req$widgets %||% list() else list()
+  if(kind=="pdf" && !single)
+    return(export_print_pages(req,data,if(include_plots)print_cards else list(),widgets))
   cards<-cards[order(vapply(cards,function(c)c$top %||% 0,0),vapply(cards,function(c)c$left %||% 0,0))]
   if(single) cards<-cards[1]
-  widgets<-if(include_widgets) req$widgets %||% list() else list()
   if(include_plots && !length(cards) && !length(widgets)) fail("Worksheet is empty")
   if(!include_plots && kind!="pdf") fail("SVG output requires plots")
-  if(kind=="pdf" && !single)
-    return(export_print_pages(req,data,if(include_plots)cards else list(),widgets))
   tmp<-tempfile(tmpdir=dirname(req$path),fileext=paste0(".",kind)); closed<-FALSE
   page_w <- if(kind=="pdf" && !single) 11.69 else 7
   page_h <- if(kind=="pdf" && !single) 8.27 else 5.5

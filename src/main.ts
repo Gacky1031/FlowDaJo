@@ -787,14 +787,39 @@ function statisticsWidgetContents(widget: StatisticsWidget) {
   const hidden = new Set(widget.hiddenPopulationPaths ?? []);
   const stats = (data.stats[targetSampleId] ?? []).filter((row) =>
     !hidden.has(JSON.stringify(row.id === "root" ? [] : pathFor(project, row.id, targetSampleId))));
+  const lineageFor = (gate: Gate | undefined) => {
+    const lineage: Gate[] = [];
+    const visited = new Set<string>();
+    let current = gate;
+    while (current && !visited.has(current.id)) {
+      visited.add(current.id);
+      lineage.unshift(current);
+      current = current.parent === "root" ? undefined : project.gates.find((candidate) =>
+        candidate.id === current!.parent && gateAppliesToSample(candidate, targetSampleId));
+    }
+    return lineage;
+  };
+  const records = stats.map((row) => ({
+    row,
+    gate: row.id === "root" ? undefined : project.gates.find((candidate) =>
+      candidate.id === row.id && gateAppliesToSample(candidate, targetSampleId)),
+  })).map((record) => ({ ...record, lineage: lineageFor(record.gate) }));
+  const followingSibling = (lineage: Gate[], level: number, after: number) =>
+    records.slice(after + 1).some((record) => record.lineage.length > level &&
+      lineage.slice(0, level).every((ancestor, index) => record.lineage[index]?.id === ancestor.id) &&
+      record.lineage[level]?.id !== lineage[level]?.id);
+  const quadrantColorOwner = new Map<string, string>();
+  for (const record of records) {
+    if (record.gate?.type === "quadrant" && record.gate.groupId && !quadrantColorOwner.has(record.gate.groupId))
+      quadrantColorOwner.set(record.gate.groupId, record.gate.id);
+  }
   const columns = [
     ...(widget.showEvents !== false ? [{ key: "events", label: "Events" }] : []),
     ...(widget.showPercentParent !== false ? [{ key: "parent", label: "% Parent" }] : []),
     ...(widget.showPercentTotal !== false ? [{ key: "total", label: "% Total" }] : []),
     ...(widget.mfiChannels ?? []).map((channel) => ({ key: `mfi:${channel}`, label: `MFI · ${channel}` })),
   ];
-  const rows = stats.map((s) => {
-    const gate = s.id === "root" ? undefined : project.gates.find((g) => g.id === s.id && gateAppliesToSample(g, targetSampleId));
+  const rows = records.map(({ row: s, gate, lineage }, index) => {
     const color = gate?.color ?? "#17699b";
     const values = columns.map((column) => {
       if (column.key === "events") return fmt(s.count);
@@ -802,9 +827,25 @@ function statisticsWidgetContents(widget: StatisticsWidget) {
       if (column.key === "total") return fmt(s.percentTotal);
       return fmt(s.medians[column.key.slice(4)] ?? null);
     });
-    return `<tr class="${selectedGates.has(s.id) ? "selected-gate" : ""}" aria-selected="${selectedGates.has(s.id)}" data-pop="${esc(s.id)}" data-sample="${esc(targetSampleId)}"><td class="population-cell">${gate ? `<button type="button" class="gate-color-swatch" data-gate-color="${esc(gate.id)}" style="--swatch-color:${esc(color)}" title="${esc(gate.name)}の色を変更" aria-label="${esc(gate.name)}の色を変更"></button>` : '<span class="population-color-placeholder" aria-hidden="true"></span>'}<span>${esc(s.name)}</span>${gate ? `<button type="button" class="rename-pop" data-rename-pop="${esc(gate.id)}" title="${esc(gate.name)}の名前を変更" aria-label="${esc(gate.name)}の名前を変更">✎</button>` : ""}</td>${values.map((value) => `<td>${value}</td>`).join("")}</tr>`;
+    const connector = lineage.map((_node, level) => {
+      const hasLaterSibling = followingSibling(lineage, level, index);
+      if (level < lineage.length - 1) return hasLaterSibling ? "│  " : "   ";
+      return hasLaterSibling ? "├─ " : "└─ ";
+    }).join("");
+    const ownsQuadrantColor = !!gate?.groupId && quadrantColorOwner.get(gate.groupId) === gate.id;
+    const sharedQuadrantColor = gate?.type === "quadrant" && !!gate.groupId && !ownsQuadrantColor;
+    const hasChildren = !!gate && project.gates.some((candidate) =>
+      candidate.parent === gate.id && gateAppliesToSample(candidate, targetSampleId));
+    const colorControl = gate
+      ? sharedQuadrantColor
+        ? `<span class="gate-color-swatch shared-quadrant-color" style="--swatch-color:${esc(color)}" title="四分ゲート共通色" aria-label="四分ゲート共通色"></span>`
+        : `<button type="button" class="gate-color-swatch" data-gate-color="${esc(gate.id)}" style="--swatch-color:${esc(color)}" title="${esc(gate.name)}の色を変更" aria-label="${esc(gate.name)}の色を変更${gate.type === "quadrant" && gate.groupId ? "（四分ゲート全体に適用）" : ""}"></button>`
+      : '<span class="population-color-placeholder" aria-hidden="true"></span>';
+    const pathLabel = lineage.map((item) => item.name).join(" / ");
+    return `<tr class="${selectedGates.has(s.id) ? "selected-gate" : ""} ${hasChildren ? "population-parent-row" : ""}" aria-selected="${selectedGates.has(s.id)}" data-pop="${esc(s.id)}" data-sample="${esc(targetSampleId)}"><td class="population-cell" data-depth="${lineage.length}" title="${esc(lineage.length ? `All events / ${pathLabel}` : "All events")}">${colorControl}<span class="population-tree-label"><span class="population-tree-prefix" aria-hidden="true">${esc(connector)}</span><span class="population-tree-name">${esc(s.name)}</span></span>${gate ? `<button type="button" class="rename-pop" data-rename-pop="${esc(gate.id)}" title="${esc(gate.name)}の名前を変更" aria-label="${esc(gate.name)}の名前を変更">✎</button>` : ""}</td>${values.map((value) => `<td>${value}</td>`).join("")}</tr>`;
   }).join("");
-  return `<div class="statistics-table-wrap"><table><thead><tr><th>Population</th>${columns.map((column) => `<th>${esc(column.label)}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>`;
+  const fontSizePt = Math.max(6, Math.min(18, Number(widget.fontSizePt ?? 9) || 9));
+  return `<div class="statistics-table-wrap" style="--statistics-font-size:${fontSizePt}pt"><table><thead><tr><th>Population</th>${columns.map((column) => `<th>${esc(column.label)}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 function isStatisticsWidget(widget: WorksheetWidget): widget is StatisticsWidget {
   return widget.type !== "compensation";
@@ -859,6 +900,7 @@ function editStatisticsWidget(widget: StatisticsWidget) {
   dialog.setAttribute("aria-label", "統計ウィジェットの表示項目");
   const channels = [...new Set(project.samples.flatMap((item) => item.channels.map((channel) => channel.id)))];
   const selected = new Set(widget.mfiChannels ?? []);
+  const fontSizePt = Math.max(6, Math.min(18, Number(widget.fontSizePt ?? 9) || 9));
   const targetSampleId = statisticsWidgetSampleId(widget);
   const populationChoices = new Map<string, string>();
   populationChoices.set(JSON.stringify([]), "All events");
@@ -868,12 +910,22 @@ function editStatisticsWidget(widget: StatisticsWidget) {
   }
   const hidden = new Set(widget.hiddenPopulationPaths ?? []);
   dialog.innerHTML = `<form><div class="axis-dialog-heading"><h2>統計ウィジェットの表示項目</h2><button type="button" data-close aria-label="閉じる">×</button></div><p class="hint">表示する集団と統計列を選択します。初期状態では全集団を表示します。</p><fieldset><legend>表示する細胞集団</legend><div class="statistics-population-actions"><button type="button" data-populations-all>すべて表示</button><button type="button" data-populations-none>すべて非表示</button></div><div class="gate-display-list statistics-population-list">${[...populationChoices].map(([key, label]) => `<label><input type="checkbox" name="visiblePopulationPath" value="${esc(key)}" ${hidden.has(key) ? "" : "checked"}><span>${esc(label)}</span></label>`).join("")}</div></fieldset><fieldset><legend>基本統計</legend><div class="statistics-field-options"><label class="check"><input name="showEvents" type="checkbox" ${widget.showEvents !== false ? "checked" : ""}> Events</label><label class="check"><input name="showPercentParent" type="checkbox" ${widget.showPercentParent !== false ? "checked" : ""}> % Parent</label><label class="check"><input name="showPercentTotal" type="checkbox" ${widget.showPercentTotal !== false ? "checked" : ""}> % Total</label></div></fieldset><fieldset><legend>Median fluorescence intensity (MFI)</legend><div class="gate-display-list">${channels.map((channel) => `<label><input type="checkbox" name="mfiChannel" value="${esc(channel)}" ${selected.has(channel) ? "checked" : ""}><span></span><span>${esc(channel)}</span></label>`).join("")}</div></fieldset><div class="axis-dialog-actions"><button type="button" data-cancel>キャンセル</button><button type="submit" class="primary">適用</button></div></form>`;
+  const fontSizeField = document.createElement("fieldset");
+  fontSizeField.innerHTML = `<legend>文字サイズ（pt）</legend><div class="statistics-font-size-control"><input type="range" name="fontSizeRange" min="6" max="18" step="0.5" value="${fontSizePt}" aria-label="統計ウィジェットの文字サイズ"><input type="number" name="fontSizePt" min="6" max="18" step="0.5" value="${fontSizePt}" aria-label="文字サイズ（ポイント）"><span>pt</span></div><p class="hint">画面表示と印刷に反映します。行数が多い場合はウィジェットを広げるか、表示する集団を絞ってください。</p>`;
+  dialog.querySelectorAll("fieldset")[1]?.after(fontSizeField);
   document.body.append(dialog);
   dialog.addEventListener("close", () => dialog.remove());
   dialog.querySelector<HTMLButtonElement>("[data-close]")!.onclick = () => dialog.close();
   dialog.querySelector<HTMLButtonElement>("[data-cancel]")!.onclick = () => dialog.close();
   dialog.querySelector<HTMLButtonElement>("[data-populations-all]")!.onclick = () => dialog.querySelectorAll<HTMLInputElement>('[name="visiblePopulationPath"]').forEach((input) => { input.checked = true; });
   dialog.querySelector<HTMLButtonElement>("[data-populations-none]")!.onclick = () => dialog.querySelectorAll<HTMLInputElement>('[name="visiblePopulationPath"]').forEach((input) => { input.checked = false; });
+  const fontRange = dialog.querySelector<HTMLInputElement>('[name="fontSizeRange"]')!;
+  const fontNumber = dialog.querySelector<HTMLInputElement>('[name="fontSizePt"]')!;
+  fontRange.oninput = () => { fontNumber.value = fontRange.value; };
+  fontNumber.oninput = () => {
+    const value = Number(fontNumber.value);
+    if (Number.isFinite(value)) fontRange.value = String(Math.max(6, Math.min(18, value)));
+  };
   dialog.querySelector("form")!.onsubmit = (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget as HTMLFormElement);
@@ -881,6 +933,7 @@ function editStatisticsWidget(widget: StatisticsWidget) {
     widget.showEvents = form.has("showEvents");
     widget.showPercentParent = form.has("showPercentParent");
     widget.showPercentTotal = form.has("showPercentTotal");
+    widget.fontSizePt = Math.max(6, Math.min(18, Number(form.get("fontSizePt")) || 9));
     widget.mfiChannels = form.getAll("mfiChannel").map(String);
     const visible = new Set(form.getAll("visiblePopulationPath").map(String));
     widget.hiddenPopulationPaths = [...new Set([...(widget.hiddenPopulationPaths ?? []).filter((key) => !populationChoices.has(key)), ...[...populationChoices.keys()].filter((key) => !visible.has(key))])];
@@ -1064,7 +1117,7 @@ function render() {
   const worksheetItemCount = sheet().plots.length + widgets.length;
   const gridColumns = Math.min(8, Math.max(1, Math.ceil(Math.sqrt(Math.max(1, worksheetItemCount)))));
   const gridRows = Math.min(20, Math.max(1, Math.ceil(Math.max(1, worksheetItemCount) / gridColumns)));
-  app.innerHTML = `<header><strong>FlowDaJo <span>WORKSPACE</span></strong><input id="experiment" value="${esc(project.name)}" aria-label="Experiment name"><span class="spacer"></span><span>R / flowCore · 0.4.2</span></header><nav class="toolbar"><button id="import" class="primary">＋ FCS</button><button id="folder">DIVAフォルダ</button><button id="diva">DIVA XML</button><button id="demo">デモ</button><button id="new-analysis">新規解析</button><span class="divider"></span><button id="load">開く</button><button id="save">保存</button><button id="undo" ${history.length ? "" : "disabled"} title="Ctrl+Z">↶ 戻す</button><button id="redo" ${future.length ? "" : "disabled"} title="Ctrl+Y">↷ やり直す</button><span class="spacer"></span><button id="batch" title="個別ゲートの階層を他サンプルへコピー">ゲート階層コピー</button><button id="csv" title="全サンプル・全分画の統計をCSVで出力">統計 CSV</button><button id="pdf">Worksheet PDF</button><button id="report">全サンプル report</button><button id="template" title="現在のワークシートとゲート定義だけをテンプレート保存">テンプレート</button><button id="toggle-properties" title="軸・補正・分画の詳細設定">解析設定</button></nav><div class="shell" style="--sample-sidebar-width:${sampleSidebarWidth}px"><aside class="browser"><h2>Samples & populations <span>${project.samples.length}</span></h2><div id="tree">${tree()}</div><div class="hint tree-help">集団をダブルクリック、またはワークシートへドラッグしてプロットを追加。Globalは1サンプル、Normalは複数サンプルを比較します。</div><button id="show-population">選択集団をプロットに追加</button></aside><div id="sample-sidebar-resize" class="sample-sidebar-resize" role="separator" aria-label="サンプル情報バーの幅を調整" aria-orientation="vertical" aria-valuemin="220" aria-valuemax="700" aria-valuenow="${sampleSidebarWidth}" tabindex="0" title="ドラッグまたは左右矢印キーでサンプル欄の幅を調整"></div><main><div class="sheet-tabs">${project.worksheets!.map((s) => `<button data-sheet="${s.id}" class="${s.id === sheet().id ? "active" : ""}">${esc(s.name)} <small>${s.mode === "normal" ? "Normal" : "Global"} · ${s.plots.length}</small></button>`).join("")}<button id="new-sheet" title="ワークシートを追加">＋</button><button id="clone-sheet" title="ワークシートを複製">⧉</button></div><div class="workspace-heading"><input id="sheet-name" value="${esc(sheet().name)}" aria-label="Worksheet name"><div class="sheet-mode" aria-label="ワークシートモード"><span>Mode:</span><button type="button" data-sheet-mode="global" class="${worksheetMode() === "global" ? "active" : ""}" title="選択サンプルを全プロットへ一括適用">Global</button><button type="button" data-sheet-mode="normal" class="${worksheetMode() === "normal" ? "active" : ""}" title="サンプルごとに固定したプロットを比較">Normal</button></div><button id="add-plot" class="primary">＋ Plot</button><button id="add-print-page" title="A4の印刷範囲を追加">＋ A4ページ</button><details class="widget-add-menu"><summary title="ワークシートウィジェットを追加">＋ ウィジェット</summary><div><button id="statistics-widget-settings" type="button">Population statistics</button><button id="compensation-widget-add" type="button">Compensation調整</button></div></details><details class="worksheet-actions-menu"><summary>解析操作 ▾</summary><div><button id="standard-expansion" type="button" title="FSC/SSCの定型展開を追加">FSC / SSC 定型展開</button><button id="compensation-expansion" type="button" title="FSC-Aを横軸、選択蛍光を縦軸にしたコンペ調整用プロットを作成">Comp定型解析</button><button id="batch-plots-sheet" type="button" title="選択したプロット・ウィジェットを他サンプルへ展開" ${worksheetMode() === "normal" ? "" : "disabled"}>Normal 選択項目を展開</button></div></details><div class="grid-arrange-control"><button id="arrange" title="各プロットを最も近いグリッドに揃える">グリッド整列</button><details class="grid-arrange-menu"><summary aria-label="グリッド配置の行数と列数を選択" title="行数と列数を指定">▾</summary><form id="grid-arrange-form"><strong>配置グリッド</strong><div class="grid-fields"><label>行<input name="rows" type="number" min="1" max="20" value="${gridRows}"></label><label>列<input name="columns" type="number" min="1" max="20" value="${gridColumns}"></label></div><label>対象<select name="scope"><option value="all">ワークシート全体</option><option value="selected">選択した項目</option></select></label><button class="primary" type="submit">この行 × 列で配置</button></form></details></div><span class="zoom-controls"><button id="zoom-out">−</button><output id="zoom-value">100%</output><button id="zoom-in">＋</button><button id="zoom-reset">1:1</button></span><span id="selection-info" class="selection-info">選択: ${selectedCards.size + selectedWidgets.size}</span><span class="spacer"></span><div class="gate-tools">${[
+  app.innerHTML = `<header><strong>FlowDaJo <span>WORKSPACE</span></strong><input id="experiment" value="${esc(project.name)}" aria-label="Experiment name"><span class="spacer"></span><span>R / flowCore · 0.4.3</span></header><nav class="toolbar"><button id="import" class="primary">＋ FCS</button><button id="folder">DIVAフォルダ</button><button id="diva">DIVA XML</button><button id="demo">デモ</button><button id="new-analysis">新規解析</button><span class="divider"></span><button id="load">開く</button><button id="save">保存</button><button id="undo" ${history.length ? "" : "disabled"} title="Ctrl+Z">↶ 戻す</button><button id="redo" ${future.length ? "" : "disabled"} title="Ctrl+Y">↷ やり直す</button><span class="spacer"></span><button id="batch" title="個別ゲートの階層を他サンプルへコピー">ゲート階層コピー</button><button id="csv" title="全サンプル・全分画の統計をCSVで出力">統計 CSV</button><button id="pdf">Worksheet PDF</button><button id="report">全サンプル report</button><button id="template" title="現在のワークシートとゲート定義だけをテンプレート保存">テンプレート</button><button id="toggle-properties" title="軸・補正・分画の詳細設定">解析設定</button></nav><div class="shell" style="--sample-sidebar-width:${sampleSidebarWidth}px"><aside class="browser"><h2>Samples & populations <span>${project.samples.length}</span></h2><div id="tree">${tree()}</div><div class="hint tree-help">集団をダブルクリック、またはワークシートへドラッグしてプロットを追加。Globalは1サンプル、Normalは複数サンプルを比較します。</div><button id="show-population">選択集団をプロットに追加</button></aside><div id="sample-sidebar-resize" class="sample-sidebar-resize" role="separator" aria-label="サンプル情報バーの幅を調整" aria-orientation="vertical" aria-valuemin="220" aria-valuemax="700" aria-valuenow="${sampleSidebarWidth}" tabindex="0" title="ドラッグまたは左右矢印キーでサンプル欄の幅を調整"></div><main><div class="sheet-tabs">${project.worksheets!.map((s) => `<button data-sheet="${s.id}" class="${s.id === sheet().id ? "active" : ""}">${esc(s.name)} <small>${s.mode === "normal" ? "Normal" : "Global"} · ${s.plots.length}</small></button>`).join("")}<button id="new-sheet" title="ワークシートを追加">＋</button><button id="clone-sheet" title="ワークシートを複製">⧉</button></div><div class="workspace-heading"><input id="sheet-name" value="${esc(sheet().name)}" aria-label="Worksheet name"><div class="sheet-mode" aria-label="ワークシートモード"><span>Mode:</span><button type="button" data-sheet-mode="global" class="${worksheetMode() === "global" ? "active" : ""}" title="選択サンプルを全プロットへ一括適用">Global</button><button type="button" data-sheet-mode="normal" class="${worksheetMode() === "normal" ? "active" : ""}" title="サンプルごとに固定したプロットを比較">Normal</button></div><button id="add-plot" class="primary">＋ Plot</button><button id="add-print-page" title="A4の印刷範囲を追加">＋ A4ページ</button><details class="widget-add-menu"><summary title="ワークシートウィジェットを追加">＋ ウィジェット</summary><div><button id="statistics-widget-settings" type="button">Population statistics</button><button id="compensation-widget-add" type="button">Compensation調整</button></div></details><details class="worksheet-actions-menu"><summary>解析操作 ▾</summary><div><button id="standard-expansion" type="button" title="FSC/SSCの定型展開を追加">FSC / SSC 定型展開</button><button id="compensation-expansion" type="button" title="FSC-Aを横軸、選択蛍光を縦軸にしたコンペ調整用プロットを作成">Comp定型解析</button><button id="batch-plots-sheet" type="button" title="選択したプロット・ウィジェットを他サンプルへ展開" ${worksheetMode() === "normal" ? "" : "disabled"}>Normal 選択項目を展開</button></div></details><div class="grid-arrange-control"><button id="arrange" title="各プロットを最も近いグリッドに揃える">グリッド整列</button><details class="grid-arrange-menu"><summary aria-label="グリッド配置の行数と列数を選択" title="行数と列数を指定">▾</summary><form id="grid-arrange-form"><strong>配置グリッド</strong><div class="grid-fields"><label>行<input name="rows" type="number" min="1" max="20" value="${gridRows}"></label><label>列<input name="columns" type="number" min="1" max="20" value="${gridColumns}"></label></div><label>対象<select name="scope"><option value="all">ワークシート全体</option><option value="selected">選択した項目</option></select></label><button class="primary" type="submit">この行 × 列で配置</button></form></details></div><span class="zoom-controls"><button id="zoom-out">−</button><output id="zoom-value">100%</output><button id="zoom-in">＋</button><button id="zoom-reset">1:1</button></span><span id="selection-info" class="selection-info">選択: ${selectedCards.size + selectedWidgets.size}</span><span class="spacer"></span><div class="gate-tools">${[
     ["select", "選択 / 編集"],
     ["rectangle", "矩形"],
     ["polygon", "多角形"],
@@ -4440,23 +4493,46 @@ function printPreviewDialog(worksheet: boolean, options: PdfOptions): Promise<bo
         const hidden = new Set(statsWidget?.hiddenPopulationPaths ?? []);
         const stats = data.stats[item.sampleId] ?? [];
         const visibleStats = stats.filter((row) => !hidden.has(JSON.stringify(row.id === "root" ? [] : pathFor(project, row.id, item.sampleId))));
+        const previewLineage = (id: string): Gate[] => {
+          const lineage: Gate[] = [];
+          const visited = new Set<string>();
+          while (id !== "root" && !visited.has(id)) {
+            visited.add(id);
+            const gate = project.gates.find((candidate) => candidate.id === id && gateAppliesToSample(candidate, item.sampleId));
+            if (!gate) break;
+            lineage.unshift(gate);
+            id = gate.parent;
+          }
+          return lineage;
+        };
+        const previewRows = visibleStats.map((row) => ({ row, lineage: previewLineage(row.id) }));
+        const previewSibling = (lineage: Gate[], level: number, index: number) => previewRows.slice(index + 1).some((candidate) =>
+          candidate.lineage.length > level && lineage.slice(0, level).every((ancestor, parentIndex) => candidate.lineage[parentIndex]?.id === ancestor.id) &&
+          candidate.lineage[level]?.id !== lineage[level]?.id);
+        const fontSizePt = Math.max(6, Math.min(18, Number(statsWidget?.fontSizePt ?? 9) || 9));
         const columns = [
           ...(statsWidget?.showEvents !== false ? ["Events"] : []),
           ...(statsWidget?.showPercentParent !== false ? ["% Parent"] : []),
           ...(statsWidget?.showPercentTotal !== false ? ["% Total"] : []),
           ...(statsWidget?.mfiChannels ?? []).map((channel) => `MFI · ${channel}`),
         ];
-        const rows = visibleStats.map((row) => {
+        const rows = previewRows.map(({ row, lineage }, index) => {
           const values = [
             ...(statsWidget?.showEvents !== false ? [fmt(row.count)] : []),
             ...(statsWidget?.showPercentParent !== false ? [fmt(row.percentParent)] : []),
             ...(statsWidget?.showPercentTotal !== false ? [fmt(row.percentTotal)] : []),
             ...(statsWidget?.mfiChannels ?? []).map((channel) => fmt(row.medians[channel] ?? null)),
           ];
-          return `<div class="preview-statistics-row"><span>${esc(row.name)}</span>${values.map((value) => `<span>${value}</span>`).join("")}</div>`;
+          const prefix = lineage.map((_gate, level) => {
+            const later = previewSibling(lineage, level, index);
+            if (level < lineage.length - 1) return later ? "│  " : "   ";
+            return later ? "├─ " : "└─ ";
+          }).join("");
+          const hasChildren = project.gates.some((gate) => gate.parent === row.id && gateAppliesToSample(gate, item.sampleId));
+          return `<div class="preview-statistics-row ${hasChildren ? "population-parent-row" : ""}"><span class="preview-population-name"><span class="population-tree-prefix" aria-hidden="true">${esc(prefix)}</span><span>${esc(row.name)}</span></span>${values.map((value) => `<span>${value}</span>`).join("")}</div>`;
         }).join("");
         const content = stats.length
-          ? `<div class="preview-statistics-table"><div class="preview-statistics-row preview-statistics-head"><span>Population</span>${columns.map((column) => `<span>${esc(column)}</span>`).join("")}</div>${rows || '<div class="preview-unavailable">表示する集団はありません</div>'}</div>`
+          ? `<div class="preview-statistics-table" style="font-size:${fontSizePt}pt"><div class="preview-statistics-row preview-statistics-head"><span>Population</span>${columns.map((column) => `<span>${esc(column)}</span>`).join("")}</div>${rows || '<div class="preview-unavailable">表示する集団はありません</div>'}</div>`
           : '<div class="preview-unavailable">このサンプルの集計値は画面上で未計算です。PDF生成時に再計算します。</div>';
         return `<section class="preview-statistics" style="left:${left}px;top:${top}px;width:${width}px;height:${height}px"><strong>${esc(item.title)} · ${esc(item.detail)}</strong>${content}</section>`;
       }
@@ -4553,6 +4629,7 @@ async function exportPdf(worksheet: boolean) {
       action: worksheet ? "worksheet_pdf" : "worksheet_report_pdf",
       project: clone(), sampleId,
       plots: structuredClone(sheet().plots), widgets: structuredClone(printableWidgets),
+      activePlotId: activeCard,
       printPages: structuredClone(sheet().printPages ?? []), includeWidgets: true,
       worksheetName: sheet().name, includePlots: options.plots,
     };

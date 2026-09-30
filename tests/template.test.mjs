@@ -93,3 +93,21 @@ test("DIVA worksheets get one landscape print page and a statistics widget idemp
   assert.equal(worksheet.widgets.length, 1);
   assert.equal(worksheet.widgets[0].id, widgetId);
 });
+
+test("statistics font size migrates safely and quadrant colors stay shared", () => {
+  const quadrants = [1, 2, 3, 4].map((quadrant) => ({ ...gate(`q${quadrant}`, "A", "parent", `P1 Q${quadrant}`),
+    type: "quadrant", groupId: "four", quadrant, center: [0, 0], color: `#00000${quadrant}` }));
+  const project = { schema: "flowdesk-r/1", name: "test", samples: [sample("A", ["FITC-A", "PE-A"])],
+    gates: [{ ...gate("parent", "A", "root", "P1"), color: "#17699b" }, ...quadrants], selectedGate: "root", notes: "", importWarnings: [],
+    activeWorksheet: "s", worksheets: [{ id: "s", name: "sheet", mode: "global", plots: [], widgets: [
+      { id: "stat-default", type: "statistics", left: 0, top: 0, width: 640, height: 340 },
+      { id: "stat-clamped", type: "statistics", left: 0, top: 0, width: 640, height: 340, fontSizePt: 24 },
+    ] }] };
+  model.migrate(project);
+  assert.deepEqual(project.gates.slice(1).map((item) => item.color), Array(4).fill("#17699b"));
+  assert.equal(project.worksheets[0].widgets[0].fontSizePt, 9);
+  assert.equal(project.worksheets[0].widgets[1].fontSizePt, 18);
+  project.gates.slice(1).forEach((item) => { item.color = "#bd4b8a"; });
+  model.migrate(project);
+  assert.deepEqual(project.gates.slice(1).map((item) => item.color), Array(4).fill("#bd4b8a"));
+});

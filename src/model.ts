@@ -272,6 +272,7 @@ export function newStatisticsWidget(
     top: plots.length ? worksheetGrid.originY : worksheetGrid.originY + worksheetGrid.rowStep,
     width: 640,
     height: 340,
+    fontSizePt: 9,
     showEvents: true,
     showPercentParent: true,
     showPercentTotal: true,
@@ -328,6 +329,19 @@ export function migrate(p: Project): Project {
   p.notes ??= "";
   p.gates ??= [];
   p.gates.forEach((g, i) => { g.color ||= populationPalette[i % populationPalette.length]; });
+  const quadrantGroups = new Map<string, Gate[]>();
+  for (const gate of p.gates) {
+    if (gate.type !== "quadrant" || !gate.groupId) continue;
+    const group = quadrantGroups.get(gate.groupId) ?? [];
+    group.push(gate);
+    quadrantGroups.set(gate.groupId, group);
+  }
+  for (const group of quadrantGroups.values()) {
+    const existingColors = new Set(group.map((gate) => gate.color));
+    const parentColor = p.gates.find((candidate) => candidate.id === group[0]!.parent)?.color;
+    const sharedColor = existingColors.size === 1 ? group[0]!.color! : parentColor ?? group[0]!.color!;
+    group.forEach((gate) => { gate.color = sharedColor; });
+  }
   if (!p.worksheets?.length) {
     const s = p.samples[0];
     const sheet: Worksheet = { id: uid(), name: "Global worksheet", plots: [], mode: "global" };
@@ -372,6 +386,9 @@ export function migrate(p: Project): Project {
       widget.showEvents ??= true;
       widget.showPercentParent ??= true;
       widget.showPercentTotal ??= true;
+      widget.fontSizePt = Number.isFinite(widget.fontSizePt)
+        ? Math.max(6, Math.min(18, widget.fontSizePt!))
+        : 9;
       widget.mfiChannels ??= [];
       widget.width ??= 640;
       widget.height ??= 340;

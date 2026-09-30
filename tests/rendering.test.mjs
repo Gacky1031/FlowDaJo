@@ -88,6 +88,16 @@ test("v0.4 scientific rendering payload, gates, modes, and vector/statistics exp
 
     const allModesPdf = join(storage, "all-modes.pdf"), report = join(storage, "report.pdf");
     await w.call({ action: "worksheet_pdf", project, sampleId: sample.id, plots, path: allModesPdf });
+    const overlapPdf = join(storage, "overlapping-plots.pdf");
+    const overlappingPlots = [
+      { ...base, id: "right-first", left: 250, top: 24, width: 344, height: 314, mode: "scatter" },
+      { ...base, id: "left-second", left: 24, top: 24, width: 344, height: 314, mode: "scatter" },
+    ];
+    const overlapResult = await w.call({ action: "worksheet_pdf", project, sampleId: sample.id,
+      plots: overlappingPlots, activePlotId: "left-second", path: overlapPdf });
+    assert.equal(overlapResult.plots, 2, "overlap does not drop either plot from the worksheet PDF");
+    assert.equal(overlapResult.outside, 0, "both overlapping plots remain inside the print area");
+    assert.ok(statSync(overlapPdf).size > 1000);
     const reportResult = await w.call({ action: "worksheet_report_pdf", project, sampleId: sample.id, plots, path: report,
       includeStatistics: true, includeCompensation: true });
     assert.equal(reportResult.pages, 1, "legacy appendix flags do not add report pages");

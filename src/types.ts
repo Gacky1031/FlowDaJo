@@ -133,6 +133,8 @@ export interface StatisticsWidget {
   showEvents?: boolean;
   showPercentParent?: boolean;
   showPercentTotal?: boolean;
+  /** Requested population table text size in points for screen and PDF. */
+  fontSizePt?: number;
   /** Optional median fluorescence intensity columns, keyed by channel id. */
   mfiChannels?: string[];
   /** JSON-encoded population name paths hidden from this widget. Empty by default. */
