@@ -21,7 +21,8 @@ test("template roundtrip maps samples/channels and includes only worksheet gate 
     gates: [gate("p1", "A", "root", "P1"), gate("p2", "A", "p1", "P2"), gate("irrelevant", "other", "root", "Other")],
     worksheets: [], selectedGate: "root", notes: "", importWarnings: [] };
   const worksheet = { id: "old-sheet", name: "Analysis", mode: "normal", plots: [{ id: "old-plot", sampleId: "A", population: ["P1"],
-    displayGates: ["p2"], mode: "scatter", x: axis("FITC-A"), y: axis("PE-A"), left: 20, top: 40, width: 344, height: 314 }],
+    displayGates: ["p2"], gateLabelPositions: { p2: { x: .6, y: .4 } }, gateLabelFontSizePt: 14,
+    mode: "scatter", x: axis("FITC-A"), y: axis("PE-A"), left: 20, top: 40, width: 344, height: 314 }],
     widgets: [{ id: "stat", type: "statistics", sampleId: "A", left: 400, top: 40, width: 640, height: 340, mfiChannels: ["FITC-A"] }],
     printPages: [{ id: "page", left: 0, top: 0, orientation: "landscape" }] };
   const template = model.createWorksheetTemplate(source, worksheet, "A");
@@ -37,6 +38,8 @@ test("template roundtrip maps samples/channels and includes only worksheet gate 
   assert.notEqual(applied.worksheet.printPages[0].id, "page");
   assert.equal(applied.gates[1].parent, applied.gates[0].id);
   assert.deepEqual(applied.worksheet.plots[0].displayGates, [applied.gates[1].id]);
+  assert.deepEqual(applied.worksheet.plots[0].gateLabelPositions, { [applied.gates[1].id]: { x: .6, y: .4 } });
+  assert.equal(applied.worksheet.plots[0].gateLabelFontSizePt, 14);
   target.gates = applied.gates;
   target.worksheets = [applied.worksheet];
   const again = model.applyWorksheetTemplate(target, template, { A: "B" }, mapping, "B");

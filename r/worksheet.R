@@ -458,17 +458,63 @@ draw_child_gates <- function(card,d,project,statistics=list()) {
   show_pct <- !isFALSE(card$showGatePercentages)
   gate_label <- function(g) { row<-Filter(function(x) identical(x$id,g$id),statistics); pct<-if(length(row)) row[[1]]$percentParent else NULL; paste0(if(show_name) g$name else "",if(show_pct && !is.null(pct)) paste0(if(show_name) " · " else "",sprintf("%.1f%%",pct)) else "") }
   gate_col <- function(g) g$color %||% "#303e48"
+  font_size <- suppressWarnings(as.numeric(card$gateLabelFontSizePt %||% 8.25))
+  if(length(font_size)!=1L || !is.finite(font_size)) font_size <- 8.25
+  label_cex <- max(6,min(24,font_size))/12
+  xr <- unlist(d$xRange); yr <- unlist(d$yRange)
+  draw_label <- function(g,x,y,anchor=0) {
+    value <- gate_label(g)
+    if(!nzchar(value)) return(invisible(NULL))
+    position <- card$gateLabelPositions[[g$id]]
+    if(!is.null(position) && is.numeric(position$x) && is.numeric(position$y) &&
+       length(position$x)==1L && length(position$y)==1L && is.finite(position$x) && is.finite(position$y)) {
+      x <- xr[1]+max(0,min(1,position$x))*diff(xr)
+      y <- yr[2]-max(0,min(1,position$y))*diff(yr)
+    }
+    label_width <- min(diff(xr),strwidth(value,cex=label_cex))
+    label_height <- min(diff(yr),strheight(value,cex=label_cex))
+    x <- max(xr[1]+anchor*label_width,min(xr[2]-(1-anchor)*label_width,x))
+    y <- max(yr[1],min(yr[2]-label_height,y))
+    text(x,y,value,adj=c(anchor,0),cex=label_cex,col=gate_col(g))
+  }
   same_axis <- function(a,b) identical(a[c("channel","scale","w","t","m","a")],b[c("channel","scale","w","t","m","a")])
-  shown_ids<-unlist(d$displayGateIds %||% list(),use.names=FALSE)
+  shown_ids <- unlist(d$displayGateIds %||% list(),use.names=FALSE)
+  seen_groups <- character()
   for(g in Filter(function(g) g$id %in% shown_ids&&(identical(g$sampleId,d$sampleId)||identical(g$scope,"global")),project$gates %||% list())) {
     if(!same_axis(g$x,card$x)) next
-    if(g$type=="range") { if(d$mode %in% c("histogram","cdf")){b<-unlist(g$bounds);xr<-unlist(d$xRange);if(b[2]<xr[1]||b[1]>xr[2])next;b<-pmax(xr[1],pmin(xr[2],b));yr<-unlist(d$yRange);y<-yr[2]-.12*diff(yr);lines(c(b[1],b[1],b[2],b[2]),c(y-.02*diff(yr),y,y,y-.02*diff(yr)),col=gate_col(g),lwd=1.1);xr<-unlist(d$xRange);if(show_name||show_pct) text(mean(pmax(xr[1],pmin(xr[2],b))),y+.035*diff(yr),gate_label(g),cex=.65,col=gate_col(g))};next }
-    if(d$mode %in% c("histogram","cdf")) next
-    if(!same_axis(g$y,card$y)) next
-    if(g$type=="rectangle") {b<-unlist(g$bounds);rect(b[1],b[3],b[2],b[4],border=gate_col(g),lwd=1.1);if(show_name||show_pct) text(b[1],b[4],gate_label(g),adj=c(0,0),cex=.65,col=gate_col(g))}
-    if(g$type=="polygon") {polygon(matrix_from(g$vertices),border=gate_col(g),lwd=1.1);if(show_name||show_pct) {v<-matrix_from(g$vertices);text(v[1,1],v[1,2],gate_label(g),adj=c(0,0),cex=.65,col=gate_col(g))}}
-    if(g$type=="quadrant") abline(v=g$center[[1]],h=g$center[[2]],col=gate_col(g),lwd=1.1)
-    if(g$type=="ellipse") {b<-unlist(g$bounds);th<-seq(0,2*pi,length.out=181);lines(mean(b[1:2])+diff(b[1:2])/2*cos(th),mean(b[3:4])+diff(b[3:4])/2*sin(th),col=gate_col(g),lwd=1.1);if(show_name||show_pct) text(b[1],b[4],gate_label(g),adj=c(0,0),cex=.65,col=gate_col(g))}
+    if(g$type=="range") {
+      if(d$mode %in% c("histogram","cdf")) {
+        b<-unlist(g$bounds); if(b[2]<xr[1]||b[1]>xr[2]) next
+        b<-pmax(xr[1],pmin(xr[2],b)); y<-yr[2]-.12*diff(yr)
+        lines(c(b[1],b[1],b[2],b[2]),c(y-.02*diff(yr),y,y,y-.02*diff(yr)),col=gate_col(g),lwd=1.1)
+        draw_label(g,b[1]+.02*diff(xr),y+.02*diff(yr))
+      }
+      next
+    }
+    if(d$mode %in% c("histogram","cdf") || !same_axis(g$y,card$y)) next
+    if(g$type=="rectangle") {
+      b<-unlist(g$bounds); rect(b[1],b[3],b[2],b[4],border=gate_col(g),lwd=1.1)
+      draw_label(g,b[1]+.02*diff(xr),b[4]+.02*diff(yr))
+    }
+    if(g$type=="polygon") {
+      v<-matrix_from(g$vertices); polygon(v,border=gate_col(g),lwd=1.1)
+      draw_label(g,v[1,1]+.02*diff(xr),v[1,2]+.02*diff(yr))
+    }
+    if(g$type=="quadrant") {
+      group <- g$groupId %||% g$id
+      if(!group %in% seen_groups) {
+        abline(v=g$center[[1]],h=g$center[[2]],col=gate_col(g),lwd=1.1)
+        seen_groups <- c(seen_groups,group)
+      }
+      right <- g$quadrant %in% c(2,4); upper <- g$quadrant %in% c(1,2)
+      draw_label(g,if(right)xr[2]-.02*diff(xr) else xr[1]+.02*diff(xr),
+        if(upper)yr[2]-.06*diff(yr) else yr[1]+.02*diff(yr),if(right)1 else 0)
+    }
+    if(g$type=="ellipse") {
+      b<-unlist(g$bounds); th<-seq(0,2*pi,length.out=181)
+      lines(mean(b[1:2])+diff(b[1:2])/2*cos(th),mean(b[3:4])+diff(b[3:4])/2*sin(th),col=gate_col(g),lwd=1.1)
+      draw_label(g,b[1]+.02*diff(xr),b[4]+.02*diff(yr))
+    }
   }
 }
 

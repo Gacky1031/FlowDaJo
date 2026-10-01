@@ -84,6 +84,16 @@ export function newPlot(
     height: 314,
   };
 }
+export function remapGateLabelPositions(
+  positions: WorksheetPlot["gateLabelPositions"],
+  mapId: (id: string) => string | undefined,
+): WorksheetPlot["gateLabelPositions"] {
+  if (!positions) return undefined;
+  return Object.fromEntries(Object.entries(positions).flatMap(([id, position]) => {
+    const mapped = mapId(id);
+    return mapped ? [[mapped, { ...position }]] : [];
+  }));
+}
 export function createWorksheetTemplate(p: Project, worksheet: Worksheet, activeSampleId: string): WorksheetTemplate {
   const sourceIds = new Set<string>();
   const addSource = (id?: string) => sourceIds.add(!id || id === "active" ? activeSampleId : id);
@@ -110,6 +120,8 @@ export function createWorksheetTemplate(p: Project, worksheet: Worksheet, active
       if (plot.population.every((part, index) => path[index] === part)) includeAncestors(gate.id);
     }
     for (const id of plot.displayGates ?? []) includeAncestors(id);
+    for (const id of Object.keys(plot.gateLabelPositions ?? {}))
+      if (p.gates.some((gate) => gate.id === id)) includeAncestors(id);
   }
   for (const widget of worksheet.widgets ?? []) {
     if (widget.type === "compensation") continue;
@@ -244,6 +256,7 @@ export function applyWorksheetTemplate(
   worksheet.plots = worksheet.plots.map((plot) => ({
     ...plot, id: uid(), x: remapAxis(plot.x), y: remapAxis(plot.y),
     sampleId: worksheet.mode === "normal" ? target(plot.sampleId) : "active",
+    gateLabelPositions: remapGateLabelPositions(plot.gateLabelPositions, (id) => remapped.get(id)),
     displayGates: (plot.displayGates ?? []).map((id) => {
       const mapped = remapped.get(id);
       if (!mapped) throw Error(`表示ゲートの対応がありません: ${id}`);
@@ -360,6 +373,14 @@ export function migrate(p: Project): Project {
     p.activeWorksheet = sheet.id;
   }
   for (const worksheet of p.worksheets) {
+    for (const plot of worksheet.plots) {
+      if (plot.gateLabelFontSizePt !== undefined)
+        plot.gateLabelFontSizePt = Number.isFinite(plot.gateLabelFontSizePt) ? Math.max(6, Math.min(24, plot.gateLabelFontSizePt)) : 8.25;
+      if (plot.gateLabelPositions) plot.gateLabelPositions = Object.fromEntries(
+        Object.entries(plot.gateLabelPositions).filter(([, position]) => position && Number.isFinite(position.x) && Number.isFinite(position.y))
+          .map(([id, position]) => [id, { x: Math.max(0, Math.min(1, position.x)), y: Math.max(0, Math.min(1, position.y)) }]),
+      );
+    }
     worksheet.mode ??= "global";
     worksheet.zoom ??= 1;
     worksheet.print ??= { showGateNames: false, showGatePercentages: false };

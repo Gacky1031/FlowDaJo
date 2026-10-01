@@ -96,6 +96,10 @@ export type PlotMode =
   | "pseudocolor"
   | "zebra";
 export interface PlotStyle {
+  /** Gate label anchors relative to the plotting area, measured from top-left. */
+  gateLabelPositions?: Record<string, { x: number; y: number }>;
+  /** Label text size in points, shared by worksheet and vector exports. */
+  gateLabelFontSizePt?: number;
   dotSize?: number;
   dotOpacity?: number;
   color?: string;

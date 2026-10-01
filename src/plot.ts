@@ -32,6 +32,7 @@ export function overlay(
   polygon: number[][] = [],
   statistics: Statistic[] = [],
   style?: WorksheetPlot,
+  labelPreview?: { id: string; position: { x: number; y: number } },
 ) {
   const geo = geometry(stage, d),
     svg = stage.querySelector("svg")!;
@@ -39,6 +40,15 @@ export function overlay(
   const line = (points: number[][]) =>
     points.map((p) => `${geo.px(p[0])},${geo.py(p[1])}`).join(" ");
   let html = "";
+  const fontSize = Math.max(6, Math.min(24, style?.gateLabelFontSizePt ?? 8.25)) * 96 / 72;
+  const label = (g: Gate, x: number, y: number, anchor = "start") => {
+    const position = labelPreview?.id === g.id ? labelPreview.position : style?.gateLabelPositions?.[g.id];
+    if (position && Number.isFinite(position.x) && Number.isFinite(position.y)) {
+      x = geo.left + position.x * (geo.right - geo.left);
+      y = geo.top + position.y * (geo.bottom - geo.top);
+    }
+    return `<text data-shape="${escape(g.id)}" data-gate-label="${escape(g.id)}" x="${x}" y="${y}" text-anchor="${anchor}" fill="${g.color ?? "#303e48"}" font-size="${fontSize}" aria-label="${escape(g.name)}の分画ラベル（ドラッグで移動）">${escape(gateLabel(g))}</text>`;
+  };
   const gateLabel = (g: Gate) => {
     const stat = statistics.find((s) => s.id === g.id);
     return `${style?.showGateNames === false ? "" : g.name}${style?.showGatePercentages === false || stat?.percentParent == null ? "" : `${style?.showGateNames === false ? "" : " · "}${stat.percentParent.toFixed(1)}%`}`;
@@ -86,7 +96,7 @@ export function overlay(
     const color = g.color ?? "#303e48";
     html += `<g data-shape="${escape(g.id)}" class="gate-shape ${active ? "editing" : ""}" stroke="${color}" fill="transparent" stroke-width="${active ? 2.2 : 1.5}">${shape}</g>`;
     if (first && g.type !== "quadrant" && gateLabel(g))
-      html += `<text data-shape="${escape(g.id)}" x="${Math.max(geo.left, Math.min(geo.right - 35, geo.px(first[0]) + 4))}" y="${Math.max(geo.top + 12, geo.py(first[1]) - 5)}" fill="${color}" font-size="11">${escape(gateLabel(g))}</text>`;
+      html += label(g, Math.max(geo.left, Math.min(geo.right - 35, geo.px(first[0]) + 4)), Math.max(geo.top + 12, geo.py(first[1]) - 5));
     if (active)
       vertices.forEach(
         (pt, i) =>
@@ -113,13 +123,20 @@ export function overlay(
   )) {
     const right = g.quadrant === 2 || g.quadrant === 4,
       upper = g.quadrant === 1 || g.quadrant === 2;
-    if (gateLabel(g)) html += `<text data-shape="${escape(g.id)}" x="${right ? geo.right - 5 : geo.left + 5}" y="${upper ? geo.top + 14 : geo.bottom - 8}" text-anchor="${right ? "end" : "start"}" fill="${g.color ?? "#303e48"}" font-size="10">${escape(gateLabel(g))}</text>`;
+    if (gateLabel(g)) html += label(g, right ? geo.right - 5 : geo.left + 5, upper ? geo.top + fontSize + 2 : geo.bottom - 8, right ? "end" : "start");
   }
   if (preview) drawGate(preview, true);
   if (polygon.length)
     html += `<polyline pointer-events="none" points="${line(polygon)}" fill="none" stroke="#e46614" stroke-width="2"/>`;
   const clipId = `plot-clip-${stage.closest<HTMLElement>("[data-card]")?.dataset.card ?? "stage"}`;
   svg.innerHTML = `<defs><clipPath id="${clipId}"><rect x="${geo.left}" y="${geo.top}" width="${geo.right - geo.left}" height="${geo.bottom - geo.top}"/></clipPath></defs><g clip-path="url(#${clipId})">${html}</g>`;
+  for (const text of svg.querySelectorAll<SVGTextElement>("[data-gate-label]")) {
+    const box = text.getBBox();
+    const dx = box.x < geo.left ? geo.left - box.x : Math.min(0, geo.right - box.x - box.width);
+    const dy = box.y < geo.top ? geo.top - box.y : Math.min(0, geo.bottom - box.y - box.height);
+    text.setAttribute("x", String(Number(text.getAttribute("x")) + dx));
+    text.setAttribute("y", String(Number(text.getAttribute("y")) + dy));
+  }
 }
 export interface PlotActions {
   project: () => Project;
@@ -130,6 +147,7 @@ export interface PlotActions {
   drill: (gate: Gate) => void;
   context: (event: MouseEvent, gates: Gate[]) => void;
   statistics: () => Statistic[];
+  moveLabel: (plot: WorksheetPlot, id: string, position: { x: number; y: number }) => void;
   commit: (
     plot: WorksheetPlot,
     d: WorksheetData,
@@ -148,6 +166,8 @@ export function gestures(
     preview: Gate | undefined,
     handle: number | undefined,
     polygon: number[][] = [];
+  let labelDrag: { id: string; start: number[]; initial: { x: number; y: number }; position: { x: number; y: number } } | undefined;
+  let ignoreLabelClickUntil = 0;
   const redraw = () =>
     overlay(
       stage,
@@ -158,6 +178,7 @@ export function gestures(
       polygon,
       a.statistics(),
       card,
+      labelDrag && { id: labelDrag.id, position: labelDrag.position },
     );
   const clipToPlot = (gate: Gate): Gate => {
     const clip = (value: number, range: [number, number]) =>
@@ -179,6 +200,7 @@ export function gestures(
     return gate;
   };
   const cancel = () => {
+    labelDrag = undefined;
     start = undefined;
     original = undefined;
     preview = undefined;
@@ -190,6 +212,21 @@ export function gestures(
     if (e.button !== 0 || (e.target as Element).closest("button")) return;
     const geo = geometry(stage, d);
     if (!geo.contains(e)) return;
+    const label = (e.target as Element).closest<SVGTextElement>("[data-gate-label]");
+    if (label) {
+      const position = {
+        x: (Number(label.getAttribute("x")) - geo.left) / (geo.right - geo.left),
+        y: (Number(label.getAttribute("y")) - geo.top) / (geo.bottom - geo.top),
+      };
+      labelDrag = { id: label.dataset.gateLabel!, start: geo.point(e), initial: position, position };
+      ignoreLabelClickUntil = performance.now() + 500;
+      stage.focus({ preventScroll: true });
+      a.gesture(true);
+      stage.setPointerCapture(e.pointerId);
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     const tool = a.tool(),
       pt = geo.point(e);
     if (oneDimensional(d) && !["select", "range"].includes(tool)) return;
@@ -227,6 +264,15 @@ export function gestures(
     e.preventDefault();
   };
   stage.onpointermove = (e) => {
+    if (labelDrag) {
+      const pt = geometry(stage, d).point(e);
+      labelDrag.position = {
+        x: Math.max(0, Math.min(1, labelDrag.initial.x + (pt[0] - labelDrag.start[0]) / (d.xRange[1] - d.xRange[0] || 1))),
+        y: Math.max(0, Math.min(1, labelDrag.initial.y - (pt[1] - labelDrag.start[1]) / (d.yRange[1] - d.yRange[0] || 1))),
+      };
+      redraw();
+      return;
+    }
     if (!start) return;
     const pt = geometry(stage, d).point(e),
       dx = pt[0] - start[0],
@@ -284,6 +330,22 @@ export function gestures(
     redraw();
   };
   stage.onpointerup = (e) => {
+    if (labelDrag) {
+      const drag = labelDrag;
+      ignoreLabelClickUntil = performance.now() + 500;
+      const geo = geometry(stage, d);
+      const label = [...stage.querySelectorAll<SVGTextElement>("[data-gate-label]")].find((item) => item.dataset.gateLabel === drag.id);
+      const position = label ? {
+        x: (Number(label.getAttribute("x")) - geo.left) / (geo.right - geo.left),
+        y: (Number(label.getAttribute("y")) - geo.top) / (geo.bottom - geo.top),
+      } : drag.position;
+      labelDrag = undefined;
+      a.gesture(false);
+      if (Math.abs(position.x - drag.initial.x) * (geo.right - geo.left) > 2 || Math.abs(position.y - drag.initial.y) * (geo.bottom - geo.top) > 2)
+        a.moveLabel(card, drag.id, position);
+      else redraw();
+      return;
+    }
     if (!start) return;
     const end = geometry(stage, d).point(e),
       geo = geometry(stage, d);
@@ -308,7 +370,8 @@ export function gestures(
     else redraw();
   };
   stage.onclick = (e) => {
-    if ((e.target as Element).closest("button")) return;
+    if (performance.now() < ignoreLabelClickUntil) return;
+    if ((e.target as Element).closest("button,[data-gate-label]")) return;
     if (a.tool() === "polygon" && !oneDimensional(d) && e.detail < 2) {
       const geo = geometry(stage, d);
       if (!geo.contains(e)) return;
@@ -349,7 +412,8 @@ export function gestures(
     a.context(e, hits(e));
   };
   stage.ondblclick = (e) => {
-    if ((e.target as Element).closest("button")) return;
+    if (performance.now() < ignoreLabelClickUntil) return;
+    if ((e.target as Element).closest("button,[data-gate-label]")) return;
     if (a.tool() === "polygon" && polygon.length >= 3) {
       e.preventDefault();
       const vertices = polygon;
