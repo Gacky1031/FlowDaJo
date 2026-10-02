@@ -47,6 +47,7 @@ import {
 } from "./model";
 import { LatestJob } from "./jobs";
 import { draw, overlay, gestures } from "./plot";
+import { projectGatePoint } from "./gate-projection";
 import {
   axisLabels,
   chooseParameter,
@@ -326,6 +327,13 @@ function updatePlotSelectionControls() {
   }
   alignmentMenu?.querySelectorAll<HTMLButtonElement>("[data-align-items]").forEach((button) => {
     button.disabled = !alignable;
+  });
+  document.querySelectorAll<HTMLButtonElement>("[data-remove-widget]").forEach((button) => {
+    const label = selectedWidgets.has(button.dataset.removeWidget ?? "") && selectedWidgets.size > 1
+      ? `選択した${selectedWidgets.size}ウィジェットを削除`
+      : button.closest(".compensation-widget") ? "Compensationウィジェットを削除" : "統計ウィジェットを削除";
+    button.title = label;
+    button.setAttribute("aria-label", label);
   });
 }
 function syncWorksheetSelection() {
@@ -1529,10 +1537,10 @@ function bulkPlotGateCandidates(sampleId: string) {
   return result;
 }
 function gateMatchesPlotAxes(gate: Gate, plot: WorksheetPlot) {
-  return axisKey(gate.x) === axisKey(plot.x) &&
+  return gate.x.channel === plot.x.channel &&
     (oneDimensional(plot)
       ? gate.type === "range"
-      : gate.type !== "range" && axisKey(gate.y) === axisKey(plot.y));
+      : gate.type !== "range" && gate.y.channel === plot.y.channel);
 }
 function currentlyDisplayedGateIds(plot: WorksheetPlot, sampleId: string) {
   if (plot.displayGates !== undefined) return new Set(plot.displayGates);
@@ -1782,8 +1790,10 @@ function commitGate(
     if (Math.abs(Math.min(...values) - range[0]) <= tolerance) extent[lo] = Math.min(...values);
     if (Math.abs(Math.max(...values) - range[1]) <= tolerance) extent[hi] = Math.max(...values);
   };
-  detect(xCoordinates, d.xRange, "xMin", "xMax");
-  detect(yCoordinates, d.yRange, "yMin", "yMax");
+  const low = existing ? projectGatePoint(existing, d, [d.xRange[0], d.yRange[0]], true) : [d.xRange[0], d.yRange[0]];
+  const high = existing ? projectGatePoint(existing, d, [d.xRange[1], d.yRange[1]], true) : [d.xRange[1], d.yRange[1]];
+  detect(xCoordinates, [low[0], high[0]], "xMin", "xMax");
+  detect(yCoordinates, [low[1], high[1]], "yMin", "yMax");
   if (existing) {
     const g = project.gates.find((g) => g.id === existing.id)!;
     Object.assign(g, shape);
@@ -2521,6 +2531,20 @@ function plotDeleteAction(plot: WorksheetPlot): MenuAction {
     danger: true,
   };
 }
+function removeWidgets(widget: WorksheetWidget) {
+  const ids = selectedWidgets.has(widget.id) ? new Set(selectedWidgets) : new Set([widget.id]);
+  remember();
+  sheet().widgets = (sheet().widgets ?? []).filter((item) => !ids.has(item.id));
+  for (const id of ids) {
+    selectedWidgets.delete(id);
+    for (const key of compensationDrafts.keys()) if (key.startsWith(`${id}\u0000`)) compensationDrafts.delete(key);
+  }
+  changed(false);
+}
+function widgetDeleteAction(widget: WorksheetWidget): MenuAction {
+  const count = selectedWidgets.has(widget.id) ? selectedWidgets.size : 1;
+  return { label: count > 1 ? `選択した${count}ウィジェットを削除` : "ウィジェットを削除", danger: true, run: () => removeWidgets(widget) };
+}
 function rootPopulationActions(sampleTargetId: string): MenuAction[] {
   const actions: MenuAction[] = [];
   if (gateClipboard) actions.push({
@@ -2612,7 +2636,7 @@ function gateMenu(g: Gate, x: number, y: number, c?: WorksheetPlot, widget?: Wor
     // A right-click on a visible gate replaces the plot context menu. Keep
     // plot-level controls reachable there, especially displayed-gate settings.
     ...(c ? plotSettingsActions() : []),
-    ...(widget ? [{ label: "Normal: 選択項目を他サンプルへ展開…", disabled: worksheetMode() !== "normal", run: () => batchWorksheetItemsToSamples() }] : []),
+    ...(widget ? [{ label: "Normal: 選択項目を他サンプルへ展開…", disabled: worksheetMode() !== "normal", run: () => batchWorksheetItemsToSamples() }, widgetDeleteAction(widget)] : []),
     { label: "ゲート階層をコピー", run: () => copyGateBranch(g, targetSampleId ?? g.sampleId, "copy") },
     { label: "ゲート階層を切り取り", run: () => copyGateBranch(g, targetSampleId ?? g.sampleId, "cut") },
     ...(gateClipboard ? [{
@@ -2902,11 +2926,8 @@ function wire() {
     button.onclick = () => {
       const id = button.dataset.removeWidget;
       if (!id) return;
-      remember();
-      selectedWidgets.delete(id);
-      for (const key of compensationDrafts.keys()) if (key.startsWith(`${id}\u0000`)) compensationDrafts.delete(key);
-      sheet().widgets = (sheet().widgets ?? []).filter((widget) => widget.id !== id);
-      changed(false);
+      const widget = sheet().widgets?.find((item) => item.id === id);
+      if (widget) removeWidgets(widget);
     };
   });
   document.querySelectorAll<HTMLSelectElement>("[data-comp-source]").forEach((select) => {
@@ -3502,7 +3523,7 @@ function wire() {
       }
       if (el.dataset.pop === "root") {
         const actions = rootPopulationActions(targetSampleId);
-        if (sourceWidget) actions.push({ label: "Normal: 選択項目を他サンプルへ展開…", disabled: worksheetMode() !== "normal", run: () => batchWorksheetItemsToSamples() });
+        if (sourceWidget) actions.push({ label: "Normal: 選択項目を他サンプルへ展開…", disabled: worksheetMode() !== "normal", run: () => batchWorksheetItemsToSamples() }, widgetDeleteAction(sourceWidget));
         if (actions.length) {
           contextMenu(e.clientX, e.clientY, "All events", actions);
           return;
@@ -3517,6 +3538,7 @@ function wire() {
     e.preventDefault();
     prepareWidgetContextSelection(widget);
     contextMenu(e.clientX, e.clientY, isStatisticsWidget(widget) ? "Population statistics" : "Compensation", [
+      widgetDeleteAction(widget),
       {
         label: "Normal: 選択項目を他サンプルへ展開…",
         disabled: worksheetMode() !== "normal",
@@ -3748,6 +3770,8 @@ function openAxisDetails(
   }, (value) => rpc("axis_preview", {
     project: clone(), sampleId: cardSample(c)?.id, population: c.population,
     axis: value,
+  }), () => rpc("axis_suggestion", {
+    project: clone(), sampleId: cardSample(c)?.id, population: c.population, axis: c[side],
   }));
 }
 function ensureCompensationWidget(visibleChannels?: string[], sourceSampleId?: string) {
@@ -4995,7 +5019,7 @@ function batchGates() {
 }
 document.addEventListener("keydown", (e) => {
   if (document.querySelector("dialog[open]")) return;
-  const editing = (e.target as Element).matches("input,textarea,select");
+  const editing = (e.target as Element).matches("input:not([type=checkbox]),textarea,select");
   if ((e.ctrlKey || e.metaKey) && e.key === "s") {
     e.preventDefault();
     void saveProject();
@@ -5017,6 +5041,10 @@ document.addEventListener("keydown", (e) => {
     gesture = false;
     tool = "select";
     render();
+  }
+  if (!editing && e.key === "Delete" && selectedWidgets.size) {
+    const widget = sheet().widgets?.find((item) => selectedWidgets.has(item.id));
+    if (widget) { e.preventDefault(); removeWidgets(widget); return; }
   }
   if (!editing && e.key === "Delete" && (selectedGates.size || selectedGate)) {
     const selected = project.gates.filter((gate) => selectedGates.has(gate.id));

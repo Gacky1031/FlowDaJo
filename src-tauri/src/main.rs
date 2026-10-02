@@ -146,6 +146,17 @@ mod tests {
             .contains("Unsupported"));
     }
     #[test]
+    fn actual_r_axis_suggestion() {
+        let demo = call(serde_json::json!({"action":"demo"})).unwrap();
+        let suggestion = call(serde_json::json!({
+            "action":"axis_suggestion", "sampleId":"demo-42", "population":[],
+            "axis":{"channel":"FITC-A","scale":"linear"},
+            "project":{"schema":"flowdesk-r/1","name":"Axis test","samples":demo["samples"],"gates":[],"selectedGate":"root"}
+        })).unwrap();
+        assert_eq!(suggestion["axis"]["scale"], "logicle");
+        assert_eq!(suggestion["total"], 16000);
+    }
+    #[test]
     fn missing_bundle_never_falls_back_to_system_r() {
         assert!(rscript(&std::env::temp_dir().join("flowdesk-no-runtime")).is_err());
     }

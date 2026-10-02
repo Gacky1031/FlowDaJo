@@ -194,6 +194,8 @@ export interface WorksheetTemplate {
   sampleBindings?: { id: string; name: string; channels: { id: string; label: string }[] }[];
 }
 export interface WorksheetData extends PlotData, PlotStyle {
+  /** Monotone coordinate maps for editing gates in their original transform. */
+  gateAxisMaps?: { source: Axis; target: Axis; from: number[]; to: number[] }[];
   xTicks?: { value: number; label: string; major?: boolean }[];
   yTicks?: { value: number; label: string; major?: boolean }[];
   excluded?: number;

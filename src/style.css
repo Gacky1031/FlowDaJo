@@ -1391,6 +1391,7 @@ dialog.properties::backdrop { background: #102e4555; }
 .axis-preview-body { min-height: 155px; color: #61798a; }
 .axis-preview-body svg { display: block; width: 100%; height: 138px; background: #f8fbfd; border: 1px solid #dce5ec; }
 .axis-preview-body small { display: block; margin-top: 4px; }
+.axis-preview-body .axis-range-warning { color: #a65b23; border-left: 3px solid currentColor; padding-left: .6em; }
 @media (max-width: 1350px) {
   .shell { grid-template-columns: var(--sample-sidebar-width, 220px) 7px minmax(400px, 1fr); }
 }

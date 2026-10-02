@@ -120,6 +120,7 @@ pub fn call(script: PathBuf, storage: PathBuf, mut payload: Value) -> Result<Val
         "analyze",
         "worksheet",
         "axis_preview",
+        "axis_suggestion",
         "worksheet_pdf",
         "worksheet_report_pdf",
         "statistics_csv",

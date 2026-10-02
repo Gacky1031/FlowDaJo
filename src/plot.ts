@@ -5,15 +5,15 @@ import type {
   Project,
   Statistic,
 } from "./types";
-import { axisKey } from "./model";
+import { projectGate, projectGatePoint } from "./gate-projection";
 import { geometry } from "./render-plot";
 export { geometry, drawPlot as draw } from "./render-plot";
 import { gateContains } from "./gate-hit";
 import { gateAppliesToSample, oneDimensional } from "./model";
 export const compatible = (g: Gate, d: WorksheetData) =>
   gateAppliesToSample(g, d.sampleId) &&
-  axisKey(g.x) === axisKey(d.x) &&
-  (g.type === "range" || axisKey(g.y) === axisKey(d.y)) &&
+  g.x.channel === d.x.channel &&
+  (g.type === "range" || g.y.channel === d.y.channel) &&
   (oneDimensional(d) ? g.type === "range" : g.type !== "range");
 const escape = (s: string) =>
   s.replace(
@@ -60,10 +60,11 @@ export function overlay(
         .map((g) => g.id),
   );
   const drawGate = (g: Gate, ghost = false) => {
+    const shown = projectGate(g, d);
     let shape = "",
       vertices: number[][] = [];
     if (g.type === "rectangle" || g.type === "ellipse") {
-      const b = g.bounds!;
+      const b = shown.bounds!;
       vertices = [
         [b[0], b[3]],
         [b[1], b[3]],
@@ -71,25 +72,27 @@ export function overlay(
         [b[0], b[2]],
       ];
       shape =
-        g.type === "ellipse"
+        g.type === "ellipse" && shown.vertices
+          ? `<polygon points="${line(shown.vertices)}"/>`
+          : g.type === "ellipse"
           ? `<ellipse cx="${geo.px((b[0] + b[1]) / 2)}" cy="${geo.py((b[2] + b[3]) / 2)}" rx="${Math.abs(geo.px(b[1]) - geo.px(b[0])) / 2}" ry="${Math.abs(geo.py(b[3]) - geo.py(b[2])) / 2}"/>`
           : `<polygon points="${line(vertices)}"/>`;
     }
     if (g.type === "range") {
       const y = d.yRange[1] - 0.12 * (d.yRange[1] - d.yRange[0]);
       vertices = [
-        [g.bounds![0], y],
-        [g.bounds![1], y],
+        [shown.bounds![0], y],
+        [shown.bounds![1], y],
       ];
-      shape = `<path d="M ${geo.px(g.bounds![0])} ${geo.py(y) + 6} V ${geo.py(y)} H ${geo.px(g.bounds![1])} V ${geo.py(y) + 6}"/>`;
+      shape = `<path d="M ${geo.px(shown.bounds![0])} ${geo.py(y) + 6} V ${geo.py(y)} H ${geo.px(shown.bounds![1])} V ${geo.py(y) + 6}"/>`;
     }
     if (g.type === "polygon") {
-      vertices = g.vertices!;
-      shape = `<polygon points="${line(vertices)}"/>`;
+      vertices = g.vertices!.map((p) => projectGatePoint(g, d, p));
+      shape = `<polygon points="${line(shown.vertices!)}"/>`;
     }
     if (g.type === "quadrant") {
-      vertices = [g.center!];
-      shape = `<path d="M ${geo.px(g.center![0])} ${geo.top} V ${geo.bottom} M ${geo.left} ${geo.py(g.center![1])} H ${geo.right}"/>`;
+      vertices = [shown.center!];
+      shape = `<path d="M ${geo.px(shown.center![0])} ${geo.top} V ${geo.bottom} M ${geo.left} ${geo.py(shown.center![1])} H ${geo.right}"/>`;
     }
     const active = g.id === selected || ghost;
     const first = vertices[0];
@@ -181,22 +184,25 @@ export function gestures(
       labelDrag && { id: labelDrag.id, position: labelDrag.position },
     );
   const clipToPlot = (gate: Gate): Gate => {
+    const low = projectGatePoint(gate, d, [d.xRange[0], d.yRange[0]], true);
+    const high = projectGatePoint(gate, d, [d.xRange[1], d.yRange[1]], true);
+    const xRange: [number, number] = [low[0], high[0]], yRange: [number, number] = [low[1], high[1]];
     const clip = (value: number, range: [number, number]) =>
       Math.max(range[0], Math.min(range[1], value));
     if (gate.bounds) {
       gate.bounds = gate.type === "range"
-        ? [clip(gate.bounds[0], d.xRange), clip(gate.bounds[1], d.xRange)]
+        ? [clip(gate.bounds[0], xRange), clip(gate.bounds[1], xRange)]
         : [
-            clip(gate.bounds[0], d.xRange),
-            clip(gate.bounds[1], d.xRange),
-            clip(gate.bounds[2], d.yRange),
-            clip(gate.bounds[3], d.yRange),
+            clip(gate.bounds[0], xRange),
+            clip(gate.bounds[1], xRange),
+            clip(gate.bounds[2], yRange),
+            clip(gate.bounds[3], yRange),
           ];
     }
     if (gate.vertices)
-      gate.vertices = gate.vertices.map(([x, y]) => [clip(x, d.xRange), clip(y, d.yRange)]);
+      gate.vertices = gate.vertices.map(([x, y]) => [clip(x, xRange), clip(y, yRange)]);
     if (gate.center)
-      gate.center = [clip(gate.center[0], d.xRange), clip(gate.center[1], d.yRange)];
+      gate.center = [clip(gate.center[0], xRange), clip(gate.center[1], yRange)];
     return gate;
   };
   const cancel = () => {
@@ -248,7 +254,7 @@ export function gestures(
       handle =
         el.dataset.handle === undefined ? undefined : Number(el.dataset.handle);
       a.select(gate.id);
-      start = pt;
+      start = projectGatePoint(gate, d, pt, true);
       a.gesture(true);
       stage.setPointerCapture(e.pointerId);
       redraw();
@@ -274,7 +280,8 @@ export function gestures(
       return;
     }
     if (!start) return;
-    const pt = geometry(stage, d).point(e),
+    const displayPoint = geometry(stage, d).point(e),
+      pt = original ? projectGatePoint(original, d, displayPoint, true) : displayPoint,
       dx = pt[0] - start[0],
       dy = pt[1] - start[1];
     if (original) {
@@ -349,10 +356,11 @@ export function gestures(
     if (!start) return;
     const end = geometry(stage, d).point(e),
       geo = geometry(stage, d);
+    const displayStart = original ? projectGatePoint(original, d, start) : start;
     const changed =
       preview &&
-      (Math.abs(geo.px(end[0]) - geo.px(start[0])) > 2 ||
-        Math.abs(geo.py(end[1]) - geo.py(start[1])) > 2);
+      (Math.abs(geo.px(end[0]) - geo.px(displayStart[0])) > 2 ||
+        Math.abs(geo.py(end[1]) - geo.py(displayStart[1])) > 2);
     const edited = preview,
       old = original;
     start = undefined;
@@ -396,7 +404,7 @@ export function gestures(
     const direct = (e.target as Element).closest<SVGElement>("[data-shape]")
       ?.dataset.shape;
     const inside = children
-      .filter((g) => gateContains(g, geo.point(e)))
+      .filter((g) => gateContains(g, projectGatePoint(g, d, geo.point(e), true)))
       .reverse();
     if (direct) {
       const g = children.find((g) => g.id === direct);

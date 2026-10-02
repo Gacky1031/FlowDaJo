@@ -111,6 +111,91 @@ cached_axis <- function(entry, axis) {
   }
   entry$axes[[key]]
 }
+axis_transform <- function(values, axis, inverse=FALSE) {
+  scale <- axis$scale %||% "linear"
+  if(identical(scale,"linear")) return(values)
+  if(identical(scale,"log")) {
+    if(inverse) return(10^values)
+    result <- rep(NA_real_,length(values)); positive <- is.finite(values)&values>0
+    result[positive] <- log10(values[positive]); return(result)
+  }
+  tr <- logicleTransform(w=axis$w %||% .5,t=axis$t %||% 262144,m=axis$m %||% 4.5,a=axis$a %||% 0)
+  as.numeric(if(inverse) inverseLogicleTransform(tr)(values) else tr(values))
+}
+same_transform <- function(a,b) identical(a[c("channel","scale","w","t","m","a")],b[c("channel","scale","w","t","m","a")])
+project_axis_values <- function(values, source, target, target_range) {
+  if(same_transform(source,target)) return(values)
+  projected <- axis_transform(axis_transform(values,source,TRUE),target)
+  if(identical(target$scale,"log")) projected[!is.finite(projected)] <- target_range[1]
+  projected
+}
+project_gate_geometry <- function(g,card,d) {
+  if(same_transform(g$x,card$x) && (g$type=="range" || same_transform(g$y,card$y))) return(g)
+  project <- function(vertices) {
+    vertices[,1] <- project_axis_values(vertices[,1],g$x,card$x,unlist(d$xRange))
+    if(g$type!="range") vertices[,2] <- project_axis_values(vertices[,2],g$y,card$y,unlist(d$yRange))
+    vertices
+  }
+  b <- unlist(g$bounds)
+  if(g$type=="ellipse") {
+    angle <- seq(0,2*pi,length.out=193L)
+    v <- project(cbind(mean(b[1:2])+diff(b[1:2])/2*cos(angle),mean(b[3:4])+diff(b[3:4])/2*sin(angle)))
+    g$vertices <- lapply(seq_len(nrow(v)),function(i) as.list(v[i,]))
+  } else if(g$type=="polygon") {
+    v <- matrix_from(g$vertices)
+    dense <- do.call(rbind,lapply(seq_len(nrow(v)),function(i) {
+      next_i <- if(i==nrow(v)) 1L else i+1L
+      fractions <- (0:47)/48
+      cbind(v[i,1]+(v[next_i,1]-v[i,1])*fractions,v[i,2]+(v[next_i,2]-v[i,2])*fractions)
+    }))
+    dense <- project(dense)
+    g$vertices <- lapply(seq_len(nrow(dense)),function(i) as.list(dense[i,]))
+  }
+  if(length(b)) {
+    g$bounds <- as.list(c(project_axis_values(b[1:2],g$x,card$x,unlist(d$xRange)),
+      if(g$type!="range") project_axis_values(b[3:4],g$y,card$y,unlist(d$yRange)) else NULL))
+  }
+  if(g$type=="quadrant") g$center <- as.list(project(matrix(unlist(g$center),nrow=1))[1,])
+  g$x <- card$x; if(g$type!="range") g$y <- card$y
+  g
+}
+gate_axis_maps <- function(gates,card,xr,yr) {
+  maps <- list(); keys <- character()
+  for(side in c("x","y")) {
+    if(side=="y" && card$mode %in% c("histogram","cdf")) next
+    target <- card[[side]]; target_range <- if(side=="x") xr else yr
+    sources <- Filter(function(g) g[[side]]$channel==target$channel && (side=="x" || g$type!="range"),gates)
+    for(g in sources) {
+      source <- g[[side]]
+      if(same_transform(source,target)) next
+      key <- jsonlite::toJSON(list(source=source,target=target),auto_unbox=TRUE)
+      if(key %in% keys) next
+      peers <- Filter(function(peer) same_transform(peer[[side]],source),sources)
+      anchors <- unlist(lapply(peers,function(peer) {
+        if(peer$type=="polygon") return(vapply(peer$vertices,function(v) v[[if(side=="x")1 else 2]],0))
+        if(peer$type=="quadrant") return(peer$center[[if(side=="x")1 else 2]])
+        unlist(peer$bounds)[if(side=="x")1:2 else 3:4]
+      }),use.names=FALSE)
+      display_knots <- seq(target_range[1],target_range[2],length.out=2049L)
+      back <- axis_transform(axis_transform(display_knots,target,TRUE),source)
+      finite <- c(anchors,back); finite <- finite[is.finite(finite)]
+      if(!length(finite)) next
+      from <- sort(unique(c(anchors,back,seq(min(finite),max(finite),length.out=1025L))))
+      from <- from[is.finite(from)]
+      to <- project_axis_values(from,source,target,target_range)
+      keep <- is.finite(to); from <- from[keep]; to <- to[keep]
+      if(length(from)<2L) next
+      # Log pins nonpositive intensities to the visible edge. Drop the resulting
+      # plateau below the display domain so inverse pointer mapping is unique.
+      if(identical(target$scale,"log")) {
+        to <- pmax(target_range[1],to)
+        keep <- !duplicated(to,fromLast=TRUE); from <- from[keep]; to <- to[keep]
+      }
+      maps[[length(maps)+1L]] <- list(source=source,target=target,from=I(from),to=I(to)); keys <- c(keys,key)
+    }
+  }
+  maps
+}
 display_limits <- function(v, axis) {
   if (!is.null(axis$min) || !is.null(axis$max)) {
     r <- c(axis$min, axis$max)
@@ -151,6 +236,36 @@ worksheet <- function(req) {
   if (length(.session_order)) trim_sessions(tail(.session_order, 1))
   list(plots=result,stats=stats,errors=errors,workerPid=Sys.getpid())
 }
+axis_suggestion <- function(req) {
+  p <- check_project(req$project)
+  samples <- Filter(function(s) identical(s$id,req$sampleId),p$samples)
+  if(length(samples)!=1L) fail("Sample not found")
+  entry <- session_analysis(p,samples[[1]],req$storage)
+  id <- resolve_population(entry$gates,req$population %||% list())
+  channel <- req$axis$channel
+  if(!channel %in% colnames(exprs(entry$frame))) fail("Axis channel not found")
+  values <- exprs(entry$frame)[entry$masks[[id]],channel]; values <- values[is.finite(values)]
+  if(!length(values)) fail("No finite events in the selected population")
+  suggested <- axis_default(channel)
+  if(identical(suggested$scale,"logicle")) {
+    high <- max(1,as.numeric(quantile(values,.9995)))
+    instrument <- range(entry$frame)[2,channel]
+    suggested$t <- if(is.finite(instrument)&&instrument>=high&&instrument<=high*100) instrument else high*1.05
+    negative <- values[values<0]
+    if(length(negative)) suggested$w <- max(0,min(suggested$m/2-.01,
+      (suggested$m-log10(suggested$t/abs(as.numeric(quantile(negative,.05)))))/2))
+    shown <- axis_transform(values,suggested)
+    limits <- display_limits(shown,list())
+    suggested$min <- min(0,limits[1]); suggested$max <- max(suggested$m,limits[2])
+    reason <- sprintf("蛍光チャンネルの分布と負値（%.1f%%）からBiexponentialの幅・上限・表示範囲を推定しました。",100*mean(values<0))
+  } else {
+    limits <- display_limits(values,list())
+    suggested$min <- if(min(values)>=0) 0 else limits[1]; suggested$max <- limits[2]
+    reason <- "FSC・SSC・TimeはLinearで、選択集団の全イベントを含む表示範囲を提案します。"
+  }
+  suggested$autoRange <- FALSE
+  list(axis=suggested,reason=reason,total=length(values))
+}
 axis_preview <- function(req) {
   p <- check_project(req$project)
   s <- Filter(function(item) identical(item$id, req$sampleId), p$samples)
@@ -159,12 +274,19 @@ axis_preview <- function(req) {
   gate_id <- resolve_population(entry$gates, req$population %||% list())
   values <- cached_axis(entry, req$axis)[entry$masks[[gate_id]]]
   range <- display_limits(values, req$axis)
+  nonpositive <- sum(!is.finite(values))
   if(identical(req$axis$scale,"log"))values[!is.finite(values)] <- range[1]
   visible <- values[is.finite(values) & values >= range[1] & values <= range[2]]
   breaks <- seq(range[1], range[2], length.out=65L)
   counts <- hist(visible, breaks=breaks, plot=FALSE, include.lowest=TRUE)$counts
-  list(range=as.list(range), counts=I(counts), ticks=axis_ticks(req$axis, range),
-       total=length(values), outside=sum(!is.finite(values) | values < range[1] | values > range[2]))
+  outside <- sum(!is.finite(values) | values < range[1] | values > range[2])
+  warnings <- character()
+  if(length(values) && outside/length(values)>.05) warnings <- c(warnings,"5%以上のイベントが表示範囲外です。推奨設定を確認してください。")
+  central_span <- if(length(visible)>20L) diff(quantile(visible,c(.01,.99))) else NA_real_
+  if(sum(counts)>0 && (max(counts)/sum(counts)>.85 || (is.finite(central_span)&&central_span>0&&central_span/diff(range)<.05))) warnings <- c(warnings,"イベントが狭い範囲に集中しています。表示範囲や変換幅を見直してください。")
+  if(identical(req$axis$scale,"log") && nonpositive>0) warnings <- c(warnings,"Logでは0以下の値が左端に表示されます。負値を比較する場合はBiexponentialを推奨します。")
+  list(range=as.list(range), counts=I(counts), ticks=axis_ticks(req$axis, range),warnings=as.list(warnings),
+       total=length(values), outside=outside)
 }
 # v0.4 rendering -----------------------------------------------------------
 superscript_digits <- c("⁰", "¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹")
@@ -190,7 +312,8 @@ axis_tick_label <- function(value) {
 axis_ticks <- function(axis, display_range) {
   scale <- axis$scale %||% "linear"
   if (identical(scale, "log")) {
-    decades <- seq(floor(display_range[1]), ceiling(display_range[2]))
+    low <- max(-300,floor(display_range[1])); high <- min(300,ceiling(display_range[2]))
+    decades <- if(low<=high)seq(low,high) else numeric()
     raw <- as.vector(outer(10^decades, 1:9, `*`))
     at <- log10(raw)
     major <- rep(1:9 == 1, each=length(decades))
@@ -288,12 +411,11 @@ worksheet_plot <- function(entry, card, s) {
       point_density <- dg$.matrix[cbind(xi,yi)]
     }
   }
-  same_axis <- function(a,b) identical(a[c("channel","scale","w","t","m","a")],b[c("channel","scale","w","t","m","a")])
   axis_eligible <- function(g) {
     sample_ok <- identical(g$sampleId,s$id)||identical(g$scope,"global")
-    if(!sample_ok || !same_axis(g$x,card$x))return(FALSE)
+    if(!sample_ok || !identical(g$x$channel,card$x$channel))return(FALSE)
     if(mode %in% c("histogram","cdf"))return(identical(g$type,"range"))
-    !identical(g$type,"range") && same_axis(g$y,card$y)
+    !identical(g$type,"range") && identical(g$y$channel,card$y$channel)
   }
   eligible_gates <- Filter(axis_eligible,entry$gates)
   eligible_ids <- vapply(eligible_gates,function(g)g$id,"")
@@ -339,7 +461,7 @@ worksheet_plot <- function(entry, card, s) {
   }
    list(id=card$id,x=card$x,y=card$y,mode=mode,sampleId=s$id,sampleName=s$name,gateId=gate_id,
         xRange=as.list(xr),yRange=as.list(yr),autoXRange=as.list(auto_xr),autoYRange=as.list(auto_yr),xTicks=axis_ticks(card$x,xr),yTicks=if(mode %in% c("histogram","cdf")) list() else axis_ticks(card$y,yr),
-       points=list(),xValues=I(if(length(index)) unname(render_x[index]) else numeric()),yValues=I(if(length(index)) unname(render_y[index]) else numeric()),pointDensity=I(point_density),pointColors=I(point_colors),displayGateIds=as.list(display_ids),
+       points=list(),gateAxisMaps=gate_axis_maps(eligible_gates,card,xr,yr),xValues=I(if(length(index)) unname(render_x[index]) else numeric()),yValues=I(if(length(index)) unname(render_y[index]) else numeric()),pointDensity=I(point_density),pointColors=I(point_colors),displayGateIds=as.list(display_ids),
        histogram=histogram,cdf=cdf,density=density,shown=if(mode %in% c("density","contour","pseudocolor","zebra","histogram","cdf")) shown_count else length(index),total=length(pool),excluded=excluded,
        dotSize=card$dotSize %||% 1.6,dotOpacity=card$dotOpacity %||% .6,color=card$color %||% "#146b8c",smoothing=card$smoothing %||% TRUE,showOutliers=card$showOutliers %||% TRUE,
        contourPercent=card$contourPercent %||% 10,bins=card$bins %||% 128,histogramNormalize=card$histogramNormalize %||% "count",compensationEnabled=isTRUE(s$compensation$enabled),compensation=s$compensation)
@@ -481,7 +603,8 @@ draw_child_gates <- function(card,d,project,statistics=list()) {
   shown_ids <- unlist(d$displayGateIds %||% list(),use.names=FALSE)
   seen_groups <- character()
   for(g in Filter(function(g) g$id %in% shown_ids&&(identical(g$sampleId,d$sampleId)||identical(g$scope,"global")),project$gates %||% list())) {
-    if(!same_axis(g$x,card$x)) next
+    if(!identical(g$x$channel,card$x$channel) || (g$type!="range" && !identical(g$y$channel,card$y$channel))) next
+    g <- project_gate_geometry(g,card,d)
     if(g$type=="range") {
       if(d$mode %in% c("histogram","cdf")) {
         b<-unlist(g$bounds); if(b[2]<xr[1]||b[1]>xr[2]) next
@@ -512,7 +635,8 @@ draw_child_gates <- function(card,d,project,statistics=list()) {
     }
     if(g$type=="ellipse") {
       b<-unlist(g$bounds); th<-seq(0,2*pi,length.out=181)
-      lines(mean(b[1:2])+diff(b[1:2])/2*cos(th),mean(b[3:4])+diff(b[3:4])/2*sin(th),col=gate_col(g),lwd=1.1)
+      if(length(g$vertices)) polygon(matrix_from(g$vertices),border=gate_col(g),lwd=1.1)
+      else lines(mean(b[1:2])+diff(b[1:2])/2*cos(th),mean(b[3:4])+diff(b[3:4])/2*sin(th),col=gate_col(g),lwd=1.1)
       draw_label(g,b[1]+.02*diff(xr),b[4]+.02*diff(yr))
     }
   }
@@ -831,6 +955,7 @@ export_vector <- function(req,kind=c("pdf","svg"),single=FALSE) {
 
 .dispatch_core <- dispatch
 dispatch <- function(req) {
+  if(identical(req$action,"axis_suggestion")) return(axis_suggestion(req))
   if(identical(req$action,"axis_preview")) return(axis_preview(req))
   if(identical(req$action,"statistics_csv")) return(export_statistics_csv(req))
   if(identical(req$action,"plot_pdf")) return(export_vector(req,"pdf",TRUE))

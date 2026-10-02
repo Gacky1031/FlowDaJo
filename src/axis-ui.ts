@@ -3,7 +3,8 @@ import { axis, oneDimensional, scaleLabel } from "./model";
 
 export type AxisSide = "x" | "y";
 export type AxisScope = "plot" | "sheet";
-export type AxisPreview = { range: [number, number]; counts: number[]; ticks: { value: number; label: string }[]; total: number; outside: number };
+export type AxisPreview = { range: [number, number]; counts: number[]; ticks: { value: number; label: string }[]; total: number; outside: number; warnings?: string[] };
+export type AxisSuggestion = { axis: Axis; reason: string; total: number };
 const esc = (value: string) =>
   value.replace(
     /[&<>"']/g,
@@ -167,14 +168,16 @@ export function axisValidation(a: Axis): string | undefined {
       a.w < 0 ||
       2 * a.w > a.m ||
       a.a < -a.w ||
-      a.a > a.m - 2 * a.w)
+      a.a > a.m - 2 * a.w || a.m > 30 || a.t > 1e300)
   )
-    return "Logicle: T > 0、M > 0、0 ≤ 2W ≤ M、−W ≤ A ≤ M−2W にしてください。";
+    return "Logicle: 0 < T ≤ 10³⁰⁰、0 < M ≤ 30、0 ≤ 2W ≤ M、−W ≤ A ≤ M−2W にしてください。推奨設定も利用できます。";
   if (
     (a.min !== undefined || a.max !== undefined) &&
-    (!Number.isFinite(a.min) || !Number.isFinite(a.max) || a.min! >= a.max!)
+    (!Number.isFinite(a.min) || !Number.isFinite(a.max) || a.min! >= a.max! || !Number.isFinite(a.max! - a.min!))
   )
     return "最小値と最大値の両方を入力し、最小値 < 最大値にしてください。";
+  if (a.scale === "log" && (a.min !== undefined && a.min < -300 || a.max !== undefined && a.max > 300))
+    return "Logの表示範囲は−300〜300 decades以内にしてください。データからの推奨設定を利用できます。";
 }
 
 export function editAxis(
@@ -184,6 +187,7 @@ export function editAxis(
   matches: number,
   apply: (a: Axis, scope: AxisScope) => void,
   preview?: (a: Axis) => Promise<AxisPreview>,
+  suggest?: () => Promise<AxisSuggestion>,
 ) {
   const { dialog, close } = dialogShell(
     "axis-dialog",
@@ -191,7 +195,7 @@ export function editAxis(
     anchor,
   );
   const current = plot[side];
-  dialog.innerHTML = `<form novalidate><div class="axis-dialog-heading"><div><h2>${side.toUpperCase()}軸のスケール詳細</h2><p>${esc(current.channel)}</p></div><button type="button" data-close aria-label="閉じる">×</button></div><label>表示スケール<select name="scale" aria-label="表示スケール"><option value="linear">Linear（線形）</option><option value="log">Log（常用対数・正値のみ）</option><option value="logicle">Biexponential / Logicle（負値・ゼロを含む蛍光）</option></select></label><fieldset class="range-fields"><legend>表示範囲</legend><label class="check"><input type="checkbox" name="auto">データに合わせて自動調整</label><div class="two"><label>最小値<input name="min" type="number" step="any"></label><label>最大値<input name="max" type="number" step="any"></label></div><p class="hint" data-units></p></fieldset><fieldset class="transform-fields"><legend>Logicle 変換</legend><div class="two"><label>W · ゼロ付近の線形幅<input name="w" type="number" step="0.1"></label><label>T · 上限の基準値<input name="t" type="number" step="any"></label><label>M · 正側の decades<input name="m" type="number" step="0.1"></label><label>A · 負側の追加 decades<input name="a" type="number" step="0.1"></label></div></fieldset><fieldset class="axis-preview"><legend>変更後の分布プレビュー</legend><div data-axis-preview class="axis-preview-body">ヒストグラムを読み込んでいます…</div></fieldset><label>適用先<select name="scope"><option value="plot">このプロットの ${side.toUpperCase()} 軸のみ</option><option value="sheet">このワークシートの同じチャンネル（${matches} 軸）</option></select></label><p class="hint">変換を変更しても既存ゲートの判定条件は保持します。異なる変換のゲートは、この表示では編集できません。</p><p class="axis-validation" role="alert"></p><div class="axis-dialog-actions"><button type="button" data-default>既定値に戻す</button><span class="spacer"></span><button type="button" data-cancel>キャンセル</button><button type="submit" class="primary">適用して閉じる</button></div></form>`;
+  dialog.innerHTML = `<form novalidate><div class="axis-dialog-heading"><div><h2>${side.toUpperCase()}軸のスケール詳細</h2><p>${esc(current.channel)}</p></div><button type="button" data-close aria-label="閉じる">×</button></div><label>表示スケール<select name="scale" aria-label="表示スケール"><option value="linear">Linear（線形）</option><option value="log">Log（常用対数・正値のみ）</option><option value="logicle">Biexponential / Logicle（負値・ゼロを含む蛍光）</option></select></label><fieldset class="range-fields"><legend>表示範囲</legend><label class="check"><input type="checkbox" name="auto">データに合わせて自動調整</label><div class="two"><label>最小値<input name="min" type="number" step="any"></label><label>最大値<input name="max" type="number" step="any"></label></div><p class="hint" data-units></p></fieldset><fieldset class="transform-fields"><legend>Logicle 変換</legend><div class="two"><label>W · ゼロ付近の線形幅<input name="w" type="number" step="0.1"></label><label>T · 上限の基準値<input name="t" type="number" step="any"></label><label>M · 正側の decades<input name="m" type="number" step="0.1"></label><label>A · 負側の追加 decades<input name="a" type="number" step="0.1"></label></div></fieldset><fieldset class="axis-suggestion"><legend>データからの推奨設定</legend><p class="hint" data-recommendation>分布に合うスケールを推定しています…</p><button type="button" data-recommend disabled>推奨設定をプレビュー</button></fieldset><fieldset class="axis-preview"><legend>変更後の分布プレビュー</legend><div data-axis-preview class="axis-preview-body">ヒストグラムを読み込んでいます…</div></fieldset><label>適用先<select name="scope"><option value="plot">このプロットの ${side.toUpperCase()} 軸のみ</option><option value="sheet">このワークシートの同じチャンネル（${matches} 軸）</option></select></label><p class="hint">変換を変更してもゲートの判定条件と細胞数を保持します。輪郭と編集座標を現在のスケールへ変換して表示します。</p><p class="axis-validation" role="alert"></p><div class="axis-dialog-actions"><button type="button" data-default>既定値に戻す</button><span class="spacer"></span><button type="button" data-cancel>キャンセル</button><button type="submit" class="primary">適用して閉じる</button></div></form>`;
   const form = dialog.querySelector("form")!;
   const input = (key: string) =>
     form.elements.namedItem(key) as HTMLInputElement;
@@ -199,6 +203,10 @@ export function editAxis(
   let previewTimer: ReturnType<typeof setTimeout> | undefined;
   let previewSequence = 0;
   const previewBody = dialog.querySelector<HTMLElement>("[data-axis-preview]")!;
+  let recommendation: AxisSuggestion | undefined;
+  const recommendationButton = dialog.querySelector<HTMLButtonElement>("[data-recommend]")!;
+  const recommendationText = dialog.querySelector<HTMLElement>("[data-recommendation]")!;
+  recommendationButton.onclick = () => { if (recommendation) fill(recommendation.axis); };
   function candidate(): Axis {
     const a: Axis = { ...current, scale: input("scale").value as Axis["scale"] };
     for (const k of ["w", "t", "m", "a"] as const) a[k] = input(k).value.trim() ? Number(input(k).value) : NaN;
@@ -229,7 +237,7 @@ export function editAxis(
           const x = 18 + (tick.value - result.range[0]) / Math.max(1e-12, result.range[1] - result.range[0]) * 384;
           return `<text x="${x}" y="126" text-anchor="middle" font-size="10" fill="#455d70">${esc(tick.label)}</text>`;
         }).join("");
-        previewBody.innerHTML = `<svg viewBox="0 0 420 138" role="img" aria-label="変更後の${esc(a.channel)}ヒストグラム"><path d="M18 20V110H402" fill="none" stroke="#667b8b"/>${bars}${labels}</svg><small>${(result.total - result.outside).toLocaleString()} / ${result.total.toLocaleString()} events · 範囲外 ${result.outside.toLocaleString()}</small>`;
+        previewBody.innerHTML = `<svg viewBox="0 0 420 138" role="img" aria-label="変更後の${esc(a.channel)}ヒストグラム"><path d="M18 20V110H402" fill="none" stroke="#667b8b"/>${bars}${labels}</svg><small>${(result.total - result.outside).toLocaleString()} / ${result.total.toLocaleString()} events · 範囲外 ${result.outside.toLocaleString()}</small>${(result.warnings ?? []).map((warning) => `<p class="hint axis-range-warning">${esc(warning)}</p>`).join("")}`;
       } catch (error) {
         if (sequence === previewSequence && dialog.open) previewBody.textContent = `プレビューを表示できません: ${String(error)}`;
       }
@@ -257,7 +265,7 @@ export function editAxis(
     update();
     schedulePreview();
   }
-  input("scale").onchange = update;
+  input("scale").onchange = () => { input("auto").checked = true; update(); };
   input("auto").onchange = update;
   dialog.querySelector<HTMLElement>("[data-close]")!.onclick = close;
   dialog.querySelector<HTMLElement>("[data-cancel]")!.onclick = close;
@@ -289,6 +297,13 @@ export function editAxis(
   };
   fill(current);
   dialog.showModal();
+  if (suggest) void suggest().then((result) => {
+    if (!dialog.open) return;
+    recommendation = result;
+    recommendationButton.disabled = false;
+    recommendationText.textContent = `${result.reason}（${result.total.toLocaleString()} events）`;
+  }).catch((error) => { if (dialog.open) recommendationText.textContent = `推奨設定を取得できません: ${String(error)}`; });
+  else recommendationText.textContent = "データの読み込み後に利用できます。";
   schedulePreview();
   input("scale").focus();
 }
