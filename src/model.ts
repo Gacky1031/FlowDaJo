@@ -9,6 +9,7 @@ import type {
   WorksheetPlot,
   WorksheetTemplate,
 } from "./types";
+import { histogramSources } from "./histogram";
 export const uid = () => crypto.randomUUID();
 export const populationPalette = [
   "#17699b", "#c33c54", "#26836b", "#9b5d16", "#7156a5", "#007f92",
@@ -22,6 +23,19 @@ export const axis = (channel: string): Axis => ({
   m: 4.5,
   a: 0,
 });
+export function importedAxis(p: Project, plot: WorksheetPlot, side: "x" | "y", sampleId: string): Axis {
+  const channel = plot[side].channel;
+  const source = p.samples.find((sample) => sample.id === sampleId);
+  const stored = [plot.importedAxes?.[side], plot.importedAxes?.[side === "x" ? "y" : "x"]].find((value) => value?.channel === channel);
+  const original = stored ?? p.divaAxisDefaults?.find((value) => value.channel === channel) ??
+    source?.plots?.flatMap((value) => [value.x, value.y]).find((value) => value.channel === channel) ??
+    p.gates.filter((gate) => !!gate.divaSourceId && gateAppliesToSample(gate, sampleId)).flatMap((gate) => [gate.x, gate.y]).find((value) => value.channel === channel) ?? axis(channel);
+  return structuredClone(original);
+}
+export function captureImportedAxes(p: Project, plot: WorksheetPlot, sampleId: string) {
+  const x = importedAxis(p, plot, "x", sampleId), y = importedAxis(p, plot, "y", sampleId);
+  plot.importedAxes = { x, y };
+}
 export const axisKey = (a: Axis) =>
   JSON.stringify([a.channel, a.scale, a.w, a.t, a.m, a.a]);
 export const worksheetGrid = {
@@ -98,7 +112,7 @@ export function createWorksheetTemplate(p: Project, worksheet: Worksheet, active
   const sourceIds = new Set<string>();
   const addSource = (id?: string) => sourceIds.add(!id || id === "active" ? activeSampleId : id);
   if (worksheet.mode !== "normal") addSource(activeSampleId);
-  for (const plot of worksheet.plots) addSource(plot.sampleId);
+  for (const plot of worksheet.plots) for (const source of histogramSources(plot)) addSource(source.sampleId);
   for (const widget of worksheet.widgets ?? []) addSource(widget.sampleId);
   const needed = new Set<string>();
   const includeAncestors = (id: string) => {
@@ -122,6 +136,11 @@ export function createWorksheetTemplate(p: Project, worksheet: Worksheet, active
     for (const id of plot.displayGates ?? []) includeAncestors(id);
     for (const id of Object.keys(plot.gateLabelPositions ?? {}))
       if (p.gates.some((gate) => gate.id === id)) includeAncestors(id);
+    for (const overlay of plot.histogramOverlays ?? []) {
+      const populationId = resolveGate(p, overlay.population, overlay.sampleId);
+      if (populationId === undefined) throw Error(`比較分画が見つかりません: ${overlay.population.join(" / ")}`);
+      includeAncestors(populationId);
+    }
   }
   for (const widget of worksheet.widgets ?? []) {
     if (widget.type === "compensation") continue;
@@ -156,6 +175,7 @@ export function templateSourceIds(template: WorksheetTemplate): string[] {
   return [...new Set([
     ...(template.sampleBindings ?? []).map((item) => item.id),
     ...template.worksheet.plots.map((item) => item.sampleId).filter((id) => id !== "active"),
+    ...template.worksheet.plots.flatMap((item) => (item.histogramOverlays ?? []).map((source) => source.sampleId)).filter((id) => id !== "active"),
     ...(template.worksheet.widgets ?? []).map((item) => item.sampleId).filter((id): id is string => !!id && id !== "active"),
     ...template.gateDefinitions.filter((gate) => gateScope(gate) === "sample").map((gate) => gate.sampleId),
   ])];
@@ -163,7 +183,10 @@ export function templateSourceIds(template: WorksheetTemplate): string[] {
 export function templateChannels(template: WorksheetTemplate): string[] {
   const channels = new Set<string>();
   const add = (axis: Axis) => { if (axis.channel) channels.add(axis.channel); };
-  for (const plot of template.worksheet.plots) { add(plot.x); add(plot.y); }
+  for (const plot of template.worksheet.plots) {
+    add(plot.x); add(plot.y);
+    if (plot.importedAxes) { add(plot.importedAxes.x); add(plot.importedAxes.y); }
+  }
   for (const gate of template.gateDefinitions) { add(gate.x); add(gate.y); }
   for (const widget of template.worksheet.widgets ?? []) if (widget.type !== "compensation")
     for (const channel of widget.mfiChannels ?? []) channels.add(channel);
@@ -253,16 +276,21 @@ export function applyWorksheetTemplate(
   let name = baseName, n = 2;
   while (names.has(name)) name = `${baseName} (${n++})`;
   worksheet.name = name;
-  worksheet.plots = worksheet.plots.map((plot) => ({
+  worksheet.plots = worksheet.plots.map((plot) => {
+    const overlayIds = new Map((plot.histogramOverlays ?? []).map((source) => [source.id, uid()]));
+    return {
     ...plot, id: uid(), x: remapAxis(plot.x), y: remapAxis(plot.y),
+    importedAxes: plot.importedAxes ? { x: remapAxis(plot.importedAxes.x), y: remapAxis(plot.importedAxes.y) } : undefined,
     sampleId: worksheet.mode === "normal" ? target(plot.sampleId) : "active",
+    histogramOverlays: worksheet.mode === "normal" ? plot.histogramOverlays?.map((source) => ({ ...source, id: overlayIds.get(source.id)!, sampleId: target(source.sampleId) })) : undefined,
+    histogramControl: worksheet.mode === "normal" ? plot.histogramControl === "primary" ? "primary" : overlayIds.get(plot.histogramControl ?? "") : undefined,
     gateLabelPositions: remapGateLabelPositions(plot.gateLabelPositions, (id) => remapped.get(id)),
     displayGates: (plot.displayGates ?? []).map((id) => {
       const mapped = remapped.get(id);
       if (!mapped) throw Error(`表示ゲートの対応がありません: ${id}`);
       return mapped;
     }),
-  }));
+  }; });
   worksheet.widgets = (worksheet.widgets ?? []).map((widget) => ({
     ...widget, id: uid(), sampleId: worksheet.mode === "normal" ? target(widget.sampleId ?? "active") : "active",
     ...(widget.type === "compensation"
@@ -293,6 +321,7 @@ export function newStatisticsWidget(
   };
 }
 export function ensureDivaWorksheetDefaults(worksheet: Worksheet): Worksheet {
+  for (const plot of worksheet.plots) plot.importedAxes ??= { x: structuredClone(plot.x), y: structuredClone(plot.y) };
   if (!worksheet.printPages?.length) {
     worksheet.printPages = [{ id: uid(), left: 0, top: 0, orientation: "landscape" }];
   }
@@ -374,6 +403,7 @@ export function migrate(p: Project): Project {
   }
   for (const worksheet of p.worksheets) {
     for (const plot of worksheet.plots) {
+      captureImportedAxes(p, plot, plot.sampleId === "active" ? p.samples[0]?.id ?? "" : plot.sampleId);
       if (plot.gateLabelFontSizePt !== undefined)
         plot.gateLabelFontSizePt = Number.isFinite(plot.gateLabelFontSizePt) ? Math.max(6, Math.min(24, plot.gateLabelFontSizePt)) : 8.25;
       if (plot.gateLabelPositions) plot.gateLabelPositions = Object.fromEntries(

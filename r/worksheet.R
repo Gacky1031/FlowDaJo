@@ -227,7 +227,7 @@ worksheet <- function(req) {
       if(length(matches)!=1) fail("Sample not found")
       s <- matches[[1]]; entry <- session_analysis(p,s,req$storage)
       stats[[id]] <- entry$stats
-      for(card in subset) tryCatch({result[[card$id]] <- worksheet_plot(entry,card,s)}, error=function(e) { errors[[card$id]] <<- conditionMessage(e) })
+      for(card in subset) tryCatch({result[[card$id]] <- worksheet_plot(entry,card,s,p,req$storage)}, error=function(e) { errors[[card$id]] <<- conditionMessage(e) })
     }, error=function(e) {
       errors[[paste0("sample:",id)]] <<- conditionMessage(e)
       for(card in subset) errors[[card$id]] <<- conditionMessage(e)
@@ -361,7 +361,24 @@ density_grid <- function(x,y,xr,yr,bins=128L,smoothing=TRUE,contour_percent=10) 
   list(x=I(centers_x),y=I(centers_y),z=I(as.vector(z)),levels=I(levels),massFractions=I(masses),contours=contours,.matrix=z,.ok=ok,.xi=xi,.yi=yi)
 }
 
-worksheet_plot <- function(entry, card, s) {
+smooth_histogram <- function(counts) {
+  if(!sum(counts)) return(as.numeric(counts))
+  total <- sum(counts); n <- length(counts); kernel <- c(1,4,6,4,1)/16
+  for(pass in 1:2) {
+    padded <- c(0,0,counts,0,0)
+    counts <- vapply(seq_len(n),function(i)sum(padded[i:(i+4)]*kernel),0)
+  }
+  counts*total/sum(counts)
+}
+histogram_distribution <- function(values,breaks,normalization,smoothing=FALSE) {
+  values <- values[is.finite(values)&values>=breaks[1]&values<=tail(breaks,1)]
+  h <- hist(values,breaks=breaks,plot=FALSE,include.lowest=TRUE)
+  counts <- if(smoothing) smooth_histogram(h$counts) else h$counts
+  if(normalization=="percent" && sum(counts)>0) counts <- 100*counts/sum(counts)
+  if(normalization %in% c("mode","modal","max") && max(counts)>0) counts <- 100*counts/max(counts)
+  list(edges=I(h$breaks),counts=I(counts),rawCounts=I(h$counts),normalize=normalization,shown=length(values))
+}
+worksheet_plot <- function(entry, card, s, p=NULL, storage=NULL) {
   started <- proc.time()[["elapsed"]]
   on.exit({
     .cache_metrics$plotBuilds <- .cache_metrics$plotBuilds + 1L
@@ -390,15 +407,39 @@ worksheet_plot <- function(entry, card, s) {
   if(!mode %in% c("histogram","cdf")) in_view <- in_view & y[pool]>=yr[1] & y[pool]<=yr[2]
   visible <- pool[finite_axes]; shown_count <- length(visible)
   max_points <- 12000L; index <- if(length(visible)>max_points) visible[unique(round(seq(1,length(visible),length.out=max_points)))] else visible
-  histogram <- NULL; cdf <- NULL; density <- NULL; point_density <- numeric()
+  histogram <- NULL; histogram_series <- NULL; cdf <- NULL; density <- NULL; point_density <- numeric()
   if(mode=="histogram") {
-    values <- x[pool]; values <- values[is.finite(values)&values>=xr[1]&values<=xr[2]]
-    breaks <- seq(xr[1],xr[2],length.out=(as.integer(card$bins %||% 128L)+1L)); h <- hist(values,breaks=breaks,plot=FALSE,include.lowest=TRUE)
-    norm <- card$histogramNormalize %||% "count"; counts <- h$counts
-    if(norm=="percent") counts <- if(sum(counts)) 100*counts/sum(counts) else counts
-    if(norm=="mode") counts <- if(max(counts)) 100*counts/max(counts) else counts
-    histogram <- list(edges=I(h$breaks),counts=I(counts),rawCounts=I(h$counts),normalize=norm)
-    yr <- c(0,max(1,counts)*1.08); shown_count <- length(values); index <- integer()
+    norm <- card$histogramNormalize %||% "count"
+    if(!norm %in% c("count","percent","max","mode","modal")) fail("Unknown histogram normalization")
+    sources <- c(list(list(id="primary",sampleId=s$id,population=card$population,color=card$histogramColor)),card$histogramOverlays %||% list())
+    palette <- c("#17699b","#c33c54","#26836b","#7156a5","#9b5d16","#666666")
+    series_values <- lapply(seq_along(sources),function(i) {
+      source <- sources[[i]]; control <- identical(card$histogramControl,source$id)
+      source$color <- source$color %||% if(control)"#666666"else if(i==1)card$color %||% palette[1] else palette[(i-1)%%length(palette)+1]
+      source$control <- control; source$sampleName <- source$sampleId; source$total <- 0
+      tryCatch({
+        matched <- if(i==1)list(s)else Filter(function(sample)identical(sample$id,source$sampleId),p$samples)
+        if(length(matched)!=1)fail("比較サンプルが見つかりません")
+        os <- matched[[1]]; source$sampleName <- os$name
+        oe <- if(i==1)entry else session_analysis(p,os,storage)
+        mask <- oe$masks[[resolve_population(oe$gates,source$population)]]
+        source$values <- cached_axis(oe,card$x)[which(mask)]; source$total <- sum(mask)
+        source
+      },error=function(e) { source$error <- conditionMessage(e); source$values <- numeric(); source })
+    })
+    combined <- unlist(lapply(series_values,function(source)source$values),use.names=FALSE)
+    xr <- display_limits(combined,card$x)
+    auto_xr <- if(isTRUE(card$x$autoRange))display_limits(combined,list())else xr
+    breaks <- seq(xr[1],xr[2],length.out=as.integer(card$bins %||% 128L)+1L)
+    histogram_series <- lapply(series_values,function(source) {
+      h <- histogram_distribution(source$values,breaks,norm,isTRUE(card$histogramSmoothing))
+      source$values <- NULL
+      c(source,h)
+    })
+    histogram <- histogram_series[[1]][c("edges","counts","rawCounts","normalize")]
+    counts <- unlist(lapply(histogram_series,function(source)source$counts))
+    yr <- c(0,max(1,counts)*1.08); auto_yr <- yr
+    shown_count <- histogram_series[[1]]$shown; index <- integer()
   } else if(mode=="cdf") {
     values <- sort(x[pool]); values <- values[is.finite(values)&values>=xr[1]&values<=xr[2]]
     cdf <- list(x=I(values),y=I(if(length(values)) 100*seq_along(values)/length(values) else numeric()),condition="selected events with finite x inside xRange")
@@ -462,7 +503,7 @@ worksheet_plot <- function(entry, card, s) {
    list(id=card$id,x=card$x,y=card$y,mode=mode,sampleId=s$id,sampleName=s$name,gateId=gate_id,
         xRange=as.list(xr),yRange=as.list(yr),autoXRange=as.list(auto_xr),autoYRange=as.list(auto_yr),xTicks=axis_ticks(card$x,xr),yTicks=if(mode %in% c("histogram","cdf")) list() else axis_ticks(card$y,yr),
        points=list(),gateAxisMaps=gate_axis_maps(eligible_gates,card,xr,yr),xValues=I(if(length(index)) unname(render_x[index]) else numeric()),yValues=I(if(length(index)) unname(render_y[index]) else numeric()),pointDensity=I(point_density),pointColors=I(point_colors),displayGateIds=as.list(display_ids),
-       histogram=histogram,cdf=cdf,density=density,shown=if(mode %in% c("density","contour","pseudocolor","zebra","histogram","cdf")) shown_count else length(index),total=length(pool),excluded=excluded,
+       histogram=histogram,histogramSeries=histogram_series,cdf=cdf,density=density,shown=if(mode %in% c("density","contour","pseudocolor","zebra","histogram","cdf")) shown_count else length(index),total=length(pool),excluded=excluded,
        dotSize=card$dotSize %||% 1.6,dotOpacity=card$dotOpacity %||% .6,color=card$color %||% "#146b8c",smoothing=card$smoothing %||% TRUE,showOutliers=card$showOutliers %||% TRUE,
        contourPercent=card$contourPercent %||% 10,bins=card$bins %||% 128,histogramNormalize=card$histogramNormalize %||% "count",compensationEnabled=isTRUE(s$compensation$enabled),compensation=s$compensation)
 }
@@ -536,8 +577,40 @@ print_channel_label <- function(sample, channel) {
   if (!nzchar(label) || identical(label, channel)) channel else label
 }
 
+draw_histograms <- function(card,d,compact=FALSE) {
+  series <- d$histogramSeries %||% list(c(d$histogram,list(color=d$color)))
+  for(source in series) {
+    if(!is.null(source$error)) next
+    edges <- unlist(source$edges); counts <- unlist(source$counts); color <- source$color %||% d$color
+    if(isTRUE(card$histogramSmoothing)) {
+      xs <- c(edges[1],(head(edges,-1)+tail(edges,-1))/2,tail(edges,1)); ys <- c(0,counts,0)
+    } else {
+      xs <- c(edges[1],rep(edges,each=2)[-c(1,2*length(edges))],tail(edges,1)); ys <- c(0,rep(counts,each=2),0)
+    }
+    polygon(xs,ys,col=adjustcolor(color,alpha.f=if(length(series)>1).09 else .22),border=NA)
+    lines(xs,ys,col=color,lwd=1.4)
+  }
+}
+histogram_legend_lines <- function(d,compact) {
+  if(!identical(d$mode,"histogram") || length(d$histogramSeries %||% list())<2) return(0)
+  length(d$histogramSeries)*(if(compact).65 else .75)+.3
+}
+draw_histogram_legend <- function(d,compact=FALSE) {
+  series <- d$histogramSeries %||% list()
+  if(identical(d$mode,"histogram") && length(series)>1) {
+    labels <- vapply(series,function(source)paste0(if(isTRUE(source$control))"[Control] "else"",if(!is.null(source$error))"[Unavailable] "else"",
+      source$sampleName," | ",paste(c("All events",unlist(source$population)),collapse=" / ")," · N=",format(source$total,big.mark=",",scientific=FALSE)),"")
+    labels <- vapply(labels,function(label)fit_pdf_text(label,max(.2,par("pin")[1]-.3),if(compact).51 else .62),"")
+    usr <- par("usr")
+    above <- grconvertY(grconvertY(usr[4],from="user",to="inches")+histogram_legend_lines(d,compact)*par("csi"),from="inches",to="user")
+    legend(usr[1],above,legend=labels,col=vapply(series,function(source)source$color %||% d$color,""),lwd=1.4,
+      cex=if(compact).51 else .62,bty="n",xpd=NA,x.intersp=.6,y.intersp=1.1)
+  }
+}
 draw_card <- function(card,d,compact=FALSE,sample_info=NULL) {
-  mode<-d$mode;hist_label<-switch(d$histogramNormalize,count="Count",percent="% of events",mode="% of maximum","Count")
+  mode<-d$mode;hist_label<-switch(d$histogramNormalize,count="Count",percent="% of events",max="% Max",mode="Normalized to Mode",modal="Normalized to Mode","Count")
+  legend_lines <- histogram_legend_lines(d,compact)
+  margins <- par("mar"); margins[3] <- margins[3]+legend_lines; par(mar=margins)
   plot(NA,xlim=unlist(d$xRange),ylim=unlist(d$yRange),axes=FALSE,xaxs="i",yaxs="i",xlab="",ylab="",main=NULL)
   col<-d$color;alpha<-d$dotOpacity;den<-d$density;pd<-unlist(d$pointDensity)
   xs<-unlist(d$xValues);ys<-unlist(d$yValues)
@@ -545,7 +618,7 @@ draw_card <- function(card,d,compact=FALSE,sample_info=NULL) {
     xs<-pmax(unlist(d$xRange)[1],pmin(unlist(d$xRange)[2],xs))
     ys<-pmax(unlist(d$yRange)[1],pmin(unlist(d$yRange)[2],ys))
   }
-  if(mode=="histogram") {e<-unlist(d$histogram$edges);v<-unlist(d$histogram$counts);polygon(c(e[1],rep(e,each=2)[-c(1,2*length(e))],tail(e,1)),c(0,rep(v,each=2),0),col=col,border=NA)}
+  if(mode=="histogram") draw_histograms(card,d,compact)
   else if(mode=="cdf") {if(length(d$cdf$x))lines(unlist(d$cdf$x),unlist(d$cdf$y),type="s",col=col,lwd=1.3)}
   else if(mode %in% c("density","zebra")) {
     nx<-length(den$x);ny<-length(den$y);z<-unlist(den$z);dx<-diff(unlist(d$xRange))/nx;dy<-diff(unlist(d$yRange))/ny
@@ -567,12 +640,13 @@ draw_card <- function(card,d,compact=FALSE,sample_info=NULL) {
   mtext(if(mode=="histogram")hist_label else if(mode=="cdf")"Cumulative %" else print_channel_label(sample_info,card$y$channel),side=2,line=if(compact)2.35 else 2.9,cex=if(compact).56 else .68)
   if(!isFALSE(card$showXAxis))box(bty="l") else segments(unlist(d$xRange)[1],unlist(d$yRange)[1],unlist(d$xRange)[1],unlist(d$yRange)[2])
   if(compact) {
-    mtext(substr(paste(d$sampleName,if(!isFALSE(card$showGateNames))paste(unlist(card$population),collapse=" / ")else""),1,48),side=3,line=.5,cex=.55,font=2)
+    mtext(substr(paste(d$sampleName,if(!isFALSE(card$showGateNames))paste(unlist(card$population),collapse=" / ")else""),1,48),side=3,line=.5+legend_lines,cex=.55,font=2)
   } else {
-    mtext(substr(d$sampleName,1,45),side=3,line=2.3,cex=.8,font=2)
-    if(!isFALSE(card$showGateNames))mtext(substr(paste(c("All events",unlist(card$population)),collapse=" / "),1,55),side=3,line=1.2,cex=.7)
-    mtext(sprintf("N = %s%s",format(d$total,big.mark=","),if(d$excluded)sprintf(" | %s outside transform",format(d$excluded,big.mark=","))else""),side=3,line=.15,cex=.6)
+    mtext(substr(d$sampleName,1,45),side=3,line=2.3+legend_lines,cex=.8,font=2)
+    if(!isFALSE(card$showGateNames))mtext(substr(paste(c("All events",unlist(card$population)),collapse=" / "),1,55),side=3,line=1.2+legend_lines,cex=.7)
+    mtext(sprintf("N = %s%s",format(d$total,big.mark=","),if(d$excluded)sprintf(" | %s outside transform",format(d$excluded,big.mark=","))else""),side=3,line=.15+legend_lines,cex=.6)
   }
+  draw_histogram_legend(d,compact)
 }
 
 draw_child_gates <- function(card,d,project,statistics=list()) {

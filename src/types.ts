@@ -107,12 +107,20 @@ export interface PlotStyle {
   showOutliers?: boolean;
   contourPercent?: number;
   bins?: number;
-  histogramNormalize?: "count" | "percent" | "mode";
+  histogramNormalize?: "count" | "percent" | "max" | "mode";
+  histogramSmoothing?: boolean;
+  /** Color override used only by the primary histogram series. */
+  histogramColor?: string;
   showGateNames?: boolean;
   showGatePercentages?: boolean;
   showXAxis?: boolean;
 }
 export interface WorksheetPlot extends Plot, PlotStyle {
+  /** Immutable import settings for the channels currently assigned to each axis. */
+  importedAxes?: { x: Axis; y: Axis };
+  histogramOverlays?: HistogramOverlay[];
+  /** "primary" or an overlay ID. This series remains fixed during sample expansion. */
+  histogramControl?: string;
   sampleId: string;
   population: string[];
   mode: PlotMode;
@@ -143,6 +151,12 @@ export interface StatisticsWidget {
   mfiChannels?: string[];
   /** JSON-encoded population name paths hidden from this widget. Empty by default. */
   hiddenPopulationPaths?: string[];
+}
+export interface HistogramOverlay {
+  id: string;
+  sampleId: string;
+  population: string[];
+  color?: string;
 }
 export interface CompensationWidget {
   type: "compensation";
@@ -228,6 +242,16 @@ export interface WorksheetData extends PlotData, PlotStyle {
     rawCounts?: number[];
     normalize?: string;
   };
+  histogramSeries?: (HistogramOverlay & {
+    sampleName: string;
+    control: boolean;
+    total: number;
+    shown: number;
+    error?: string;
+    edges: number[];
+    counts: number[];
+    rawCounts: number[];
+  })[];
 }
 export interface WorksheetResult {
   plots: Record<string, WorksheetData>;

@@ -1,15 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import ts from "typescript";
+import { tsModuleUrl } from "./ts-module.mjs";
 import { readFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { rWorker } from "./r-worker.mjs";
 
-const output = ts.transpileModule(readFileSync("src/model.ts", "utf8"), {
-  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 },
-}).outputText;
-const model = await import("data:text/javascript;base64," + Buffer.from(output).toString("base64"));
+const model = await import(tsModuleUrl("src/model.ts"));
 const axis = (channel) => ({ channel, scale: "linear", w: .5, t: 262144, m: 4.5, a: 0 });
 const sample = (id, channels) => ({ id, name: id, kind: "demo", seed: 42, events: 10,
   channels: channels.map((value) => ({ id: value, label: value })), compensation: { enabled: false, channels: [], values: [] } });

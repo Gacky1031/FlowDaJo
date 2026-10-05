@@ -36,7 +36,9 @@ R/flowCore and fixed WebView2 are bundled exactly as in 0.2.0. Builds include al
 
 `tests/worksheet.test.mjs` verifies persistent worker behavior, 12 plots, cache invalidation, missing population errors, fixed/global binding, transforms, histogram totals and project roundtrip. `tests/jobs.test.mjs` verifies request coalescing and stale response suppression. Browser tests use `scripts/test-ui.mjs`, a loopback-only development bridge to real bundled R, with native file dialogs stubbed; this bridge is excluded from production. `scripts/native-smoke.mjs` tests the built executable through its actual Tauri IPC.
 
-FlowJo `.wsp` import, histogram overlays, Boolean gates and automatic single-stain compensation are not implemented. Million-event responsiveness and Windows 10 hardware have not been benchmarked. Windows native WebView drag-and-drop and embedded PDF display still require an interactive application check on a host that allows UI automation.
+FlowJo `.wsp` import, Boolean gates and automatic single-stain compensation are not implemented. Million-event responsiveness and Windows 10 hardware have not been benchmarked. Windows native WebView drag-and-drop and embedded PDF display still require an interactive application check on a host that allows UI automation.
+
+Normal worksheets support histogram overlays with per-series sample/population bindings, optional color overrides and one fixed control. The destination graph owns the common X transform, limits, bins, smoothing and normalization. Expansion changes every non-control binding. A two-pass binomial kernel smooths displayed counts while preserving the total; raw counts and population masks remain unchanged. `%max` and `Modal` both normalize each displayed curve's peak to 100. `tests/histogram.test.mjs` covers real R calculations, template binding, controls on either side and vector export; `tests/ui/histogram.spec.ts` covers dragging, settings, expansion and save/load.
 
 ## Direct axis UI (0.3.1)
 

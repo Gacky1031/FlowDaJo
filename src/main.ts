@@ -43,6 +43,8 @@ import {
   templateSourceIds,
   templateChannels,
   applyWorksheetTemplate,
+  importedAxis,
+  captureImportedAxes,
   remapGateLabelPositions,
 } from "./model";
 import { LatestJob } from "./jobs";
@@ -57,6 +59,8 @@ import {
 } from "./axis-ui";
 import { contextMenu, closeMenu, type MenuAction } from "./context-menu";
 import { editPlotOptions } from "./plot-options";
+import { histogramAxisLabel, histogramSources, histogramExpansionOwner, expandHistogram, mergeHistograms } from "./histogram";
+import { editHistogramComparison } from "./histogram-ui";
 import "./style.css";
 const app = document.querySelector<HTMLDivElement>("#app")!;
 let project: Project = migrate({
@@ -297,6 +301,7 @@ function newSamplePlot(s: Sample, index: number, population: string[] = []) {
   const plot = newPlot(s, index, population);
   plot.x = axisForSample(s, plot.x.channel);
   plot.y = axisForSample(s, plot.y.channel);
+  plot.importedAxes = { x: structuredClone(plot.x), y: structuredClone(plot.y) };
   Object.assign(plot, freePlotPosition(plot.width, plot.height));
   return plot;
 }
@@ -511,9 +516,14 @@ function normalizeWorksheetPlots(ws = sheet()) {
   const mode = ws.mode ?? "global";
   ws.mode = mode;
   const fallback = sampleId || project.samples[0]?.id || "";
+  for (const plot of ws.plots) captureImportedAxes(project, plot, plot.sampleId === "active" ? fallback : plot.sampleId);
   if (mode === "global") {
     // A Global worksheet always follows exactly one selected sample.
-    for (const p of ws.plots) p.sampleId = "active";
+    for (const p of ws.plots) {
+      p.sampleId = "active";
+      delete p.histogramOverlays;
+      delete p.histogramControl;
+    }
     for (const widget of ws.widgets ?? []) {
       if (isStatisticsWidget(widget)) widget.sampleId = "active";
     }
@@ -1065,7 +1075,7 @@ function plotCard(c: WorksheetPlot) {
           })),
           c.sampleId,
         )}</select>`;
-  return `<section class="plot-card ${activeCard === c.id ? "active" : ""} ${focusedCard === c.id ? "focused" : ""} ${selectedCards.has(c.id) ? "selected-card" : ""}" data-card="${c.id}" style="left:${c.left}px;top:${c.top}px;width:${c.width}px;height:${c.height}px"><div class="plot-head" data-move="${c.id}"><label class="plot-select" title="一括操作の対象"><input type="checkbox" data-select-card="${c.id}" ${selectedCards.has(c.id) ? "checked" : ""} aria-label="プロットを一括操作の対象にする"></label><span class="grip">⠿</span>${binding}<button data-swap="${c.id}" title="X / Y 軸を入れ替え" aria-label="X / Y 軸を入れ替え" ${oneDimensional(c) ? "disabled" : ""}>⇄</button><button data-focus="${c.id}" title="${focusedCard === c.id ? "ワークシートに戻る (Esc)" : "拡大して編集"}" aria-label="${focusedCard === c.id ? "ワークシートに戻る" : "拡大して編集"}">${focusedCard === c.id ? "↙" : "⛶"}</button><button data-duplicate="${c.id}" title="プロットを複製">⧉</button><button data-plot-options="${c.id}" title="プロット表示設定" aria-label="プロット表示設定">⚙</button><button data-remove="${c.id}" title="プロットを削除">×</button></div><div class="plot-pop"><button data-parent="${c.id}" aria-label="親集団に戻る" title="親集団に戻る" ${c.population.length ? "" : "disabled"}>↑</button><select data-population="${c.id}" aria-label="表示する集団">${populationOptions(c)}</select><button type="button" data-gate-display="${c.id}" title="軸が一致するゲートの表示・非表示を選択" aria-label="表示するゲートを選択">◇</button><select data-mode="${c.id}" title="グラフ形式">${selectOptions(plotModes, c.mode)}</select></div><div class="plot-stage ${c.showXAxis === false ? "hide-x-axis" : ""}" data-stage="${c.id}"><canvas></canvas><svg xmlns="http://www.w3.org/2000/svg"></svg><div class="plot-error"></div>${axisLabels(c, channels)}</div><div class="resize-grip" data-resize="${c.id}" title="サイズを変更">◢</div></section>`;
+  return `<section class="plot-card ${activeCard === c.id ? "active" : ""} ${focusedCard === c.id ? "focused" : ""} ${selectedCards.has(c.id) ? "selected-card" : ""}" data-card="${c.id}" style="left:${c.left}px;top:${c.top}px;width:${c.width}px;height:${c.height}px"><div class="plot-head" data-move="${c.id}"><label class="plot-select" title="一括操作の対象"><input type="checkbox" data-select-card="${c.id}" ${selectedCards.has(c.id) ? "checked" : ""} aria-label="プロットを一括操作の対象にする"></label><span class="grip">⠿</span>${binding}<button data-swap="${c.id}" title="X / Y 軸を入れ替え" aria-label="X / Y 軸を入れ替え" ${oneDimensional(c) ? "disabled" : ""}>⇄</button><button data-focus="${c.id}" title="${focusedCard === c.id ? "ワークシートに戻る (Esc)" : "拡大して編集"}" aria-label="${focusedCard === c.id ? "ワークシートに戻る" : "拡大して編集"}">${focusedCard === c.id ? "↙" : "⛶"}</button><button data-duplicate="${c.id}" title="プロットを複製">⧉</button><button data-plot-options="${c.id}" title="プロット表示設定" aria-label="プロット表示設定">⚙</button><button data-remove="${c.id}" title="プロットを削除">×</button></div><div class="plot-pop"><button data-parent="${c.id}" aria-label="親集団に戻る" title="親集団に戻る" ${c.population.length ? "" : "disabled"}>↑</button><select data-population="${c.id}" aria-label="表示する集団">${populationOptions(c)}</select><button type="button" data-gate-display="${c.id}" title="軸が一致するゲートの表示・非表示を選択" aria-label="表示するゲートを選択">◇</button><select data-mode="${c.id}" title="グラフ形式">${selectOptions(plotModes, c.mode)}</select>${c.mode === "histogram" && worksheetMode() === "normal" ? `<button type="button" data-histogram-comparison="${c.id}" aria-label="ヒストグラムの比較設定" title="重ね合わせ・Control・曲線の色を設定">比較</button>` : ""}</div><div class="plot-stage ${c.showXAxis === false ? "hide-x-axis" : ""}" data-stage="${c.id}"><canvas></canvas><svg xmlns="http://www.w3.org/2000/svg"></svg><div class="plot-error"></div>${axisLabels(c, channels)}</div><div class="resize-grip" data-resize="${c.id}" title="サイズを変更">◢</div></section>`;
 }
 function inspector() {
   const c = card();
@@ -1098,6 +1108,19 @@ function positionToolbarMenu(menu: HTMLDetailsElement) {
   panel.style.left = `${Math.max(margin, Math.min(bounds.left, window.innerWidth - panel.offsetWidth - margin))}px`;
   menu.dataset.positioned = "true";
 }
+function histogramComparison(c: WorksheetPlot) {
+  if (worksheetMode() !== "normal" || c.mode !== "histogram") return;
+  editHistogramComparison(c, project, (value) => { remember(); Object.assign(c, value); changed(); });
+}
+function combineSelectedHistograms() {
+  const plots = selectedPlots();
+  const target = plots.find((plot) => plot.id === activeCard) ?? plots[0];
+  if (!target || worksheetMode() !== "normal" || plots.length < 2 || plots.some((plot) => plot.mode !== "histogram" || plot.x.channel !== target.x.channel)) return;
+  remember();
+  for (const source of plots) if (mergeHistograms(target, source)) sheet().plots = sheet().plots.filter((plot) => plot.id !== source.id);
+  activeCard = target.id; selectedCards.clear(); selectedCards.add(target.id); changed();
+  message("ヒストグラムを共通の軸で重ね合わせました。「比較」でControlと曲線の色を設定できます。");
+}
 
 function render() {
   normalizeWorksheetPlots();
@@ -1126,7 +1149,7 @@ function render() {
   const worksheetItemCount = sheet().plots.length + widgets.length;
   const gridColumns = Math.min(8, Math.max(1, Math.ceil(Math.sqrt(Math.max(1, worksheetItemCount)))));
   const gridRows = Math.min(20, Math.max(1, Math.ceil(Math.max(1, worksheetItemCount) / gridColumns)));
-  app.innerHTML = `<header><strong>FlowDaJo <span>WORKSPACE</span></strong><input id="experiment" value="${esc(project.name)}" aria-label="Experiment name"><span class="spacer"></span><span>R / flowCore · 0.4.4</span></header><nav class="toolbar"><button id="import" class="primary">＋ FCS</button><button id="folder">DIVAフォルダ</button><button id="diva">DIVA XML</button><button id="demo">デモ</button><button id="new-analysis">新規解析</button><span class="divider"></span><button id="load">開く</button><button id="save">保存</button><button id="undo" ${history.length ? "" : "disabled"} title="Ctrl+Z">↶ 戻す</button><button id="redo" ${future.length ? "" : "disabled"} title="Ctrl+Y">↷ やり直す</button><span class="spacer"></span><button id="batch" title="個別ゲートの階層を他サンプルへコピー">ゲート階層コピー</button><button id="csv" title="全サンプル・全分画の統計をCSVで出力">統計 CSV</button><button id="pdf">Worksheet PDF</button><button id="report">全サンプル report</button><button id="template" title="現在のワークシートとゲート定義だけをテンプレート保存">テンプレート</button><button id="toggle-properties" title="軸・補正・分画の詳細設定">解析設定</button></nav><div class="shell" style="--sample-sidebar-width:${sampleSidebarWidth}px"><aside class="browser"><h2>Samples & populations <span>${project.samples.length}</span></h2><div id="tree">${tree()}</div><div class="hint tree-help">集団をダブルクリック、またはワークシートへドラッグしてプロットを追加。Globalは1サンプル、Normalは複数サンプルを比較します。</div><button id="show-population">選択集団をプロットに追加</button></aside><div id="sample-sidebar-resize" class="sample-sidebar-resize" role="separator" aria-label="サンプル情報バーの幅を調整" aria-orientation="vertical" aria-valuemin="220" aria-valuemax="700" aria-valuenow="${sampleSidebarWidth}" tabindex="0" title="ドラッグまたは左右矢印キーでサンプル欄の幅を調整"></div><main><div class="sheet-tabs">${project.worksheets!.map((s) => `<button data-sheet="${s.id}" class="${s.id === sheet().id ? "active" : ""}">${esc(s.name)} <small>${s.mode === "normal" ? "Normal" : "Global"} · ${s.plots.length}</small></button>`).join("")}<button id="new-sheet" title="ワークシートを追加">＋</button><button id="clone-sheet" title="ワークシートを複製">⧉</button></div><div class="workspace-heading"><input id="sheet-name" value="${esc(sheet().name)}" aria-label="Worksheet name"><div class="sheet-mode" aria-label="ワークシートモード"><span>Mode:</span><button type="button" data-sheet-mode="global" class="${worksheetMode() === "global" ? "active" : ""}" title="選択サンプルを全プロットへ一括適用">Global</button><button type="button" data-sheet-mode="normal" class="${worksheetMode() === "normal" ? "active" : ""}" title="サンプルごとに固定したプロットを比較">Normal</button></div><button id="add-plot" class="primary">＋ Plot</button><button id="add-print-page" title="A4の印刷範囲を追加">＋ A4ページ</button><details class="widget-add-menu"><summary title="ワークシートウィジェットを追加">＋ ウィジェット</summary><div><button id="statistics-widget-settings" type="button">Population statistics</button><button id="compensation-widget-add" type="button">Compensation調整</button></div></details><details class="worksheet-actions-menu"><summary>解析操作 ▾</summary><div><button id="standard-expansion" type="button" title="FSC/SSCの定型展開を追加">FSC / SSC 定型展開</button><button id="compensation-expansion" type="button" title="FSC-Aを横軸、選択蛍光を縦軸にしたコンペ調整用プロットを作成">Comp定型解析</button><button id="batch-plots-sheet" type="button" title="選択したプロット・ウィジェットを他サンプルへ展開" ${worksheetMode() === "normal" ? "" : "disabled"}>Normal 選択項目を展開</button></div></details><div class="grid-arrange-control"><button id="arrange" title="各プロットを最も近いグリッドに揃える">グリッド整列</button><details class="grid-arrange-menu"><summary aria-label="グリッド配置の行数と列数を選択" title="行数と列数を指定">▾</summary><form id="grid-arrange-form"><strong>配置グリッド</strong><div class="grid-fields"><label>行<input name="rows" type="number" min="1" max="20" value="${gridRows}"></label><label>列<input name="columns" type="number" min="1" max="20" value="${gridColumns}"></label></div><label>対象<select name="scope"><option value="all">ワークシート全体</option><option value="selected">選択した項目</option></select></label><button class="primary" type="submit">この行 × 列で配置</button></form></details></div><span class="zoom-controls"><button id="zoom-out">−</button><output id="zoom-value">100%</output><button id="zoom-in">＋</button><button id="zoom-reset">1:1</button></span><span id="selection-info" class="selection-info">選択: ${selectedCards.size + selectedWidgets.size}</span><span class="spacer"></span><div class="gate-tools">${[
+  app.innerHTML = `<header><strong>FlowDaJo <span>WORKSPACE</span></strong><input id="experiment" value="${esc(project.name)}" aria-label="Experiment name"><span class="spacer"></span><span>R / flowCore · 0.4.6</span></header><nav class="toolbar"><button id="import" class="primary">＋ FCS</button><button id="folder">DIVAフォルダ</button><button id="diva">DIVA XML</button><button id="demo">デモ</button><button id="new-analysis">新規解析</button><span class="divider"></span><button id="load">開く</button><button id="save">保存</button><button id="undo" ${history.length ? "" : "disabled"} title="Ctrl+Z">↶ 戻す</button><button id="redo" ${future.length ? "" : "disabled"} title="Ctrl+Y">↷ やり直す</button><span class="spacer"></span><button id="batch" title="個別ゲートの階層を他サンプルへコピー">ゲート階層コピー</button><button id="csv" title="全サンプル・全分画の統計をCSVで出力">統計 CSV</button><button id="pdf">Worksheet PDF</button><button id="report">全サンプル report</button><button id="template" title="現在のワークシートとゲート定義だけをテンプレート保存">テンプレート</button><button id="toggle-properties" title="軸・補正・分画の詳細設定">解析設定</button></nav><div class="shell" style="--sample-sidebar-width:${sampleSidebarWidth}px"><aside class="browser"><h2>Samples & populations <span>${project.samples.length}</span></h2><div id="tree">${tree()}</div><div class="hint tree-help">集団をダブルクリック、またはワークシートへドラッグしてプロットを追加。Globalは1サンプル、Normalは複数サンプルを比較します。</div><button id="show-population">選択集団をプロットに追加</button></aside><div id="sample-sidebar-resize" class="sample-sidebar-resize" role="separator" aria-label="サンプル情報バーの幅を調整" aria-orientation="vertical" aria-valuemin="220" aria-valuemax="700" aria-valuenow="${sampleSidebarWidth}" tabindex="0" title="ドラッグまたは左右矢印キーでサンプル欄の幅を調整"></div><main><div class="sheet-tabs">${project.worksheets!.map((s) => `<button data-sheet="${s.id}" class="${s.id === sheet().id ? "active" : ""}">${esc(s.name)} <small>${s.mode === "normal" ? "Normal" : "Global"} · ${s.plots.length}</small></button>`).join("")}<button id="new-sheet" title="ワークシートを追加">＋</button><button id="clone-sheet" title="ワークシートを複製">⧉</button></div><div class="workspace-heading"><input id="sheet-name" value="${esc(sheet().name)}" aria-label="Worksheet name"><div class="sheet-mode" aria-label="ワークシートモード"><span>Mode:</span><button type="button" data-sheet-mode="global" class="${worksheetMode() === "global" ? "active" : ""}" title="選択サンプルを全プロットへ一括適用">Global</button><button type="button" data-sheet-mode="normal" class="${worksheetMode() === "normal" ? "active" : ""}" title="サンプルごとに固定したプロットを比較">Normal</button></div><button id="add-plot" class="primary">＋ Plot</button><button id="add-print-page" title="A4の印刷範囲を追加">＋ A4ページ</button><details class="widget-add-menu"><summary title="ワークシートウィジェットを追加">＋ ウィジェット</summary><div><button id="statistics-widget-settings" type="button">Population statistics</button><button id="compensation-widget-add" type="button">Compensation調整</button></div></details><details class="worksheet-actions-menu"><summary>解析操作 ▾</summary><div><button id="standard-expansion" type="button" title="FSC/SSCの定型展開を追加">FSC / SSC 定型展開</button><button id="compensation-expansion" type="button" title="FSC-Aを横軸、選択蛍光を縦軸にしたコンペ調整用プロットを作成">Comp定型解析</button><button id="batch-plots-sheet" type="button" title="選択したプロット・ウィジェットを他サンプルへ展開" ${worksheetMode() === "normal" ? "" : "disabled"}>Normal 選択項目を展開</button></div></details><div class="grid-arrange-control"><button id="arrange" title="各プロットを最も近いグリッドに揃える">グリッド整列</button><details class="grid-arrange-menu"><summary aria-label="グリッド配置の行数と列数を選択" title="行数と列数を指定">▾</summary><form id="grid-arrange-form"><strong>配置グリッド</strong><div class="grid-fields"><label>行<input name="rows" type="number" min="1" max="20" value="${gridRows}"></label><label>列<input name="columns" type="number" min="1" max="20" value="${gridColumns}"></label></div><label>対象<select name="scope"><option value="all">ワークシート全体</option><option value="selected">選択した項目</option></select></label><button class="primary" type="submit">この行 × 列で配置</button></form></details></div><span class="zoom-controls"><button id="zoom-out">−</button><output id="zoom-value">100%</output><button id="zoom-in">＋</button><button id="zoom-reset">1:1</button></span><span id="selection-info" class="selection-info">選択: ${selectedCards.size + selectedWidgets.size}</span><span class="spacer"></span><div class="gate-tools">${[
     ["select", "選択 / 編集"],
     ["rectangle", "矩形"],
     ["polygon", "多角形"],
@@ -1413,8 +1436,8 @@ async function setSheetMode(mode: WorksheetMode) {
   if (worksheetMode() === mode) return;
   if (mode === "global") {
     const proceed = isTauri()
-      ? await confirm("Normal worksheetの全プロットを選択中の1サンプルへ切り替えます。各プロットのサンプル指定は保持されません。Global worksheetへ変更しますか？", { title: "ワークシートモードの変更" })
-      : window.confirm("Normal worksheetの全プロットを選択中の1サンプルへ切り替えます。Global worksheetへ変更しますか？");
+      ? await confirm("Normal worksheetの全プロットを選択中の1サンプルへ切り替えます。各プロットのサンプル指定は保持されません。ヒストグラムの重ね合わせとControl指定も解除します。Global worksheetへ変更しますか？", { title: "ワークシートモードの変更" })
+      : window.confirm("Normal worksheetの全プロットを選択中の1サンプルへ切り替えます。ヒストグラムの重ね合わせとControl指定も解除します。Global worksheetへ変更しますか？");
     if (!proceed) return;
   }
   remember();
@@ -1986,15 +2009,18 @@ function removeGates(gates: Gate[], verb = "削除") {
     : [gate]);
   for (const worksheet of project.worksheets ?? []) {
     for (const plot of worksheet.plots) {
-      const targetSampleId = plot.sampleId === "active" ? sampleId : plot.sampleId;
+      for (const source of histogramSources(plot)) {
+      const targetSampleId = source.sampleId === "active" ? sampleId : source.sampleId;
       if (!targetSampleId) continue;
       for (const gate of branchRoots) {
         if (!gateAppliesToSample(gate, targetSampleId)) continue;
         const oldPath = pathFor(project, gate.id, targetSampleId);
-        if (oldPath.length && oldPath.every((part, index) => plot.population[index] === part)) {
-          plot.population = pathFor(project, gate.parent, targetSampleId);
+        if (oldPath.length && oldPath.every((part, index) => source.population[index] === part)) {
+          source.population = pathFor(project, gate.parent, targetSampleId);
+          if (source.id === "primary") plot.population = source.population;
           break;
         }
+      }
       }
     }
   }
@@ -2043,11 +2069,13 @@ function renameGate(g: Gate, input: string): boolean {
   g.name = name;
   for (const ws of project.worksheets!)
     for (const p of ws.plots) {
-      const candidates = p.sampleId === "active"
+      for (const source of histogramSources(p)) {
+      const candidates = source.sampleId === "active"
         ? [...oldPaths.values()]
-        : [oldPaths.get(p.sampleId)].filter((path): path is string[] => !!path);
-      const oldPath = candidates.find((path) => path.every((part, index) => p.population[index] === part));
-      if (oldPath?.length) p.population[oldPath.length - 1] = name;
+        : [oldPaths.get(source.sampleId)].filter((path): path is string[] => !!path);
+      const oldPath = candidates.find((path) => path.every((part, index) => source.population[index] === part));
+      if (oldPath?.length) source.population[oldPath.length - 1] = name;
+      }
     }
   for (const ws of project.worksheets ?? []) {
     for (const widget of ws.widgets ?? []) {
@@ -2430,9 +2458,11 @@ function changeGateScope(
     for (const worksheet of project.worksheets ?? []) for (const plot of worksheet.plots) {
       if (plot.sampleId !== "active" && plot.sampleId !== target.id && plot.displayGates)
         plot.displayGates = plot.displayGates.filter((id) => !ids.has(id) && !removedOtherIds.has(id));
-      if (plot.sampleId !== "active" && plot.sampleId !== target.id && removedForOtherSamples.some((gate) => gate.sampleId === plot.sampleId)) {
-        while (plot.population.length && resolveGate(project, plot.population, plot.sampleId) === undefined)
-          plot.population.pop();
+      for (const source of histogramSources(plot)) {
+        if (source.sampleId !== "active" && source.sampleId !== target.id) {
+          while (source.population.length && resolveGate(project, source.population, source.sampleId) === undefined)
+            source.population.pop();
+        }
       }
     }
   }
@@ -2602,6 +2632,10 @@ function plotSettingsActions(): MenuAction[] {
     return !!target && bulkPlotGateCandidates(target.id).length > 0;
   });
   return [
+    ...(targets.some((plot) => plot.mode === "histogram") ? [
+      { label: "ヒストグラムの比較・Control・色…", disabled: worksheetMode() !== "normal" || targets.length !== 1, run: () => histogramComparison(targets[0]) },
+      ...(targets.length > 1 ? [{ label: "選択ヒストグラムを重ね合わせる", disabled: worksheetMode() !== "normal" || targets.some((plot) => plot.mode !== "histogram" || plot.x.channel !== targets[0].x.channel), run: combineSelectedHistograms }] : []),
+    ] : []),
     { label: `${prefix}軸・表示分画を変更…`, disabled: targets.every((plot) => !cardSample(plot)), run: () => batchPlotSettingsDialog("all") },
     { label: `${prefix}ゲート輪郭を選択…`, disabled: !hasGateChoices, run: () => batchPlotSettingsDialog("gates") },
     { label: "Normal: 選択項目を他サンプルへ展開…", disabled: worksheetMode() !== "normal", run: () => batchWorksheetItemsToSamples() },
@@ -2836,6 +2870,18 @@ async function deleteWorksheet(id: string) {
   message(remaining.length ? `「${current.name}」を削除しました。` : `「${current.name}」を削除し、空のワークシートを作成しました。`);
 }
 function wire() {
+  document.querySelectorAll<HTMLButtonElement>("[data-histogram-comparison]").forEach((button) => button.onclick = () => histogramComparison(sheet().plots.find((plot) => plot.id === button.dataset.histogramComparison)!));
+  document.querySelectorAll<HTMLButtonElement>("[data-histogram-axis]").forEach((button) => {
+    const show = (event: MouseEvent) => {
+      event.preventDefault();
+      const plot = sheet().plots.find((plot) => plot.id === button.dataset.histogramAxis)!;
+      contextMenu(event.clientX, event.clientY, "ヒストグラムの縦軸・平滑化", [
+        ...(["count", "percent", "max", "mode"] as const).map((value) => ({ label: `${(plot.histogramNormalize ?? "count") === value ? "✓ " : ""}${histogramAxisLabel(value)}`, run: () => { remember(); plot.histogramNormalize = value; changed(); } })),
+        { label: `${plot.histogramSmoothing ? "✓ " : ""}ヒストグラムを平滑化`, run: () => { remember(); plot.histogramSmoothing = !plot.histogramSmoothing; changed(); } },
+      ]);
+    };
+    button.onclick = show; button.oncontextmenu = show;
+  });
   wireSampleSidebarResize();
   const sampleSortSelect = document.querySelector<HTMLSelectElement>("#sample-sort")!;
   sampleSortSelect.onchange = () => {
@@ -3698,6 +3744,8 @@ function wire() {
         const start = [e.clientX, e.clientY];
         const zoom = sheet().zoom ?? 1;
         let moved = false;
+        let histogramDropTarget: WorksheetPlot | undefined;
+        const clearHistogramDrop = () => document.querySelectorAll(".histogram-drop-target").forEach((target) => target.classList.remove("histogram-drop-target"));
         gesture = true;
         el.setPointerCapture(e.pointerId);
         el.onpointermove = (ev) => {
@@ -3723,13 +3771,28 @@ function wire() {
               entry.element.style.left = `${entry.item.left}px`;
               entry.element.style.top = `${entry.item.top}px`;
             }
+            if (entries.length === 1 && "population" in item && item.mode === "histogram" && worksheetMode() === "normal") {
+              clearHistogramDrop();
+              histogramDropTarget = sheet().plots.filter((plot) => plot.id !== item.id && plot.mode === "histogram" && plot.x.channel === item.x.channel)
+                .map((plot) => ({ plot, overlap: Math.max(0, Math.min(plot.left + plot.width, item.left + item.width) - Math.max(plot.left, item.left)) * Math.max(0, Math.min(plot.top + plot.height, item.top + item.height) - Math.max(plot.top, item.top)) / Math.min(plot.width * plot.height, item.width * item.height) }))
+                .filter((entry) => entry.overlap >= .55).sort((a, b) => b.overlap - a.overlap)[0]?.plot;
+              if (histogramDropTarget) document.querySelector(`[data-card="${CSS.escape(histogramDropTarget.id)}"]`)?.classList.add("histogram-drop-target");
+            }
           }
         };
-        const end = () => {
+        const end = (event: PointerEvent) => {
           el.onpointermove = null;
           el.onpointerup = null;
           el.onpointercancel = null;
           gesture = false;
+          clearHistogramDrop();
+          if (event.type !== "pointercancel" && moved && histogramDropTarget && "population" in item && mergeHistograms(histogramDropTarget, item)) {
+            sheet().plots = sheet().plots.filter((plot) => plot.id !== item.id);
+            selectedCards.clear(); selectedCards.add(histogramDropTarget.id); activeCard = histogramDropTarget.id;
+            changed();
+            message("ヒストグラムを重ね合わせました。「比較」でControlと曲線の色を設定できます。Undoで元に戻せます。");
+            return;
+          }
           if (moved) changed(false);
         };
         el.onpointerup = end;
@@ -3772,7 +3835,7 @@ function openAxisDetails(
     axis: value,
   }), () => rpc("axis_suggestion", {
     project: clone(), sampleId: cardSample(c)?.id, population: c.population, axis: c[side],
-  }));
+  }), importedAxis(project, c, side, cardSample(c)?.id ?? sampleId));
 }
 function ensureCompensationWidget(visibleChannels?: string[], sourceSampleId?: string) {
   const menu = document.querySelector<HTMLDetailsElement>(".widget-add-menu");
@@ -4230,6 +4293,7 @@ async function importData(source: "fcs" | "folder" | "diva") {
           // Refresh DIVA's axis transform while retaining the user's layout and plot styling.
           plot.x = structuredClone(importedPlot.x);
           plot.y = structuredClone(importedPlot.y);
+          plot.importedAxes = { x: structuredClone(importedPlot.x), y: structuredClone(importedPlot.y) };
         }
         ensureDivaWorksheetDefaults(existing);
         refreshedWorksheets++;
@@ -4763,7 +4827,7 @@ function isPlotItem(item: WorksheetPlot | WorksheetWidget): item is WorksheetPlo
   return "population" in item;
 }
 function expansionOwner(item: WorksheetPlot | WorksheetWidget): Sample | undefined {
-  if (isPlotItem(item)) return cardSample(item);
+  if (isPlotItem(item)) return item.mode === "histogram" ? sample(histogramExpansionOwner(item)) : cardSample(item);
   if (isStatisticsWidget(item)) return sample(statisticsWidgetSampleId(item));
   return compensationWidgetSample(item);
 }
@@ -4810,7 +4874,8 @@ function batchWorksheetItemsToSamples() {
         const owner = expansionOwner(source);
         if (!owner || owner.id === target.id) continue;
         if (isPlotItem(source)) {
-          if (source.population.length && !resolveGate(project, source.population, target.id)) {
+          const populations = source.mode === "histogram" ? histogramSources(source).filter((entry) => entry.id !== source.histogramControl).map((entry) => entry.population) : [source.population];
+          if (populations.some((population) => population.length && !resolveGate(project, population, target.id))) {
             skipped.push(`${target.name}: ${source.population.join(" / ")}（分画なし）`);
             continue;
           }
@@ -4819,12 +4884,15 @@ function batchWorksheetItemsToSamples() {
             skipped.push(`${target.name}: 軸チャンネルなし`);
             continue;
           }
+          const expanded = expandHistogram(source, target.id);
           const duplicate = sheet().plots.some((plot) =>
-            plot.sampleId === target.id &&
+            plot.sampleId === expanded.sampleId &&
             JSON.stringify(plot.population) === JSON.stringify(source.population) &&
             axisKey(plot.x) === axisKey(source.x) &&
             axisKey(plot.y) === axisKey(source.y) &&
-            plot.mode === source.mode);
+            plot.mode === source.mode &&
+            plot.histogramControl === expanded.histogramControl &&
+            JSON.stringify(plot.histogramOverlays ?? []) === JSON.stringify(expanded.histogramOverlays ?? []));
           if (duplicate) continue;
         } else if (isStatisticsWidget(source)) {
           const duplicate = (sheet().widgets ?? []).some((widget) =>
@@ -4876,20 +4944,21 @@ function batchWorksheetItemsToSamples() {
       }
       slot++;
       group.forEach(({ source, target }, index) => {
-        const copy = structuredClone(source);
+        const copy = isPlotItem(source) ? expandHistogram(source, target.id) : structuredClone(source);
         copy.id = uid();
         copy.left = positions[index].left;
         copy.top = positions[index].top;
         if (isPlotItem(copy)) {
-          copy.sampleId = target.id;
+          if (copy.mode !== "histogram") copy.sampleId = target.id;
+          const primaryTargetId = copy.sampleId;
           copy.gateLabelPositions = remapGateLabelPositions(copy.gateLabelPositions, (id) =>
             project.gates.some((gate) => gate.id === id)
-              ? resolveGate(project, pathFor(project, id, expansionOwner(source)!.id), target.id)
+              ? resolveGate(project, pathFor(project, id, cardSample(source as WorksheetPlot)!.id), primaryTargetId)
               : undefined);
           if (copy.displayGates) copy.displayGates = copy.displayGates.flatMap((id) => {
             const gate = project.gates.find((item) => item.id === id);
             if (!gate) return [];
-            const mapped = resolveGate(project, pathFor(project, id, expansionOwner(source)!.id), target.id);
+            const mapped = resolveGate(project, pathFor(project, id, cardSample(source as WorksheetPlot)!.id), primaryTargetId);
             return mapped && mapped !== "root" ? [mapped] : [];
           });
           createdPlots.push(copy);

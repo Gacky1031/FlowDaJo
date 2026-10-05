@@ -1,0 +1,32 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { tsModuleUrl } from "./ts-module.mjs";
+const model = await import(tsModuleUrl("src/model.ts"));
+const renderer = await import(tsModuleUrl("src/render-plot.ts"));
+test("import baselines survive edits, migration, channel changes and template remapping", () => {
+  const original = { ...model.axis("FITC-A"), w: .7, min: -.4, max: 4.1, autoRange: false };
+  const plot = { ...model.newPlot({ id: "A", channels: [{ id: "FITC-A" }, { id: "SSC-A" }] }, 0), x: structuredClone(original), y: model.axis("SSC-A") };
+  const sheet = { id: "sheet", name: "DIVA", mode: "normal", plots: [plot], divaSourceId: "source" };
+  model.ensureDivaWorksheetDefaults(sheet);
+  const project = { schema: "flowdesk-r/1", samples: [{ id: "A", name: "A", channels: [{ id: "FITC-A" }, { id: "SSC-A" }, { id: "PE-A" }] }], gates: [], worksheets: [sheet], divaAxisDefaults: [{ ...original, w: .5 }, { ...model.axis("PE-A"), w: .8 }] };
+  plot.x.scale = "linear"; plot.x.min = -1000;
+  model.migrate(project);
+  assert.deepEqual(model.importedAxis(project, plot, "x", "A"), original);
+  const restored = model.importedAxis(project, plot, "x", "A"); restored.w = 1;
+  assert.equal(plot.importedAxes.x.w, .7);
+  const template = model.createWorksheetTemplate(project, sheet, "A");
+  const target = { ...project, samples: [{ ...project.samples[0], id: "B", channels: [{ id: "FL1" }, { id: "SSC-A" }] }] };
+  const applied = model.applyWorksheetTemplate(target, template, { A: "B" }, { "FITC-A": "FL1", "SSC-A": "SSC-A" }, "B").worksheet.plots[0];
+  assert.deepEqual(applied.importedAxes.x, { ...original, channel: "FL1" });
+  plot.x = model.axis("PE-A"); model.captureImportedAxes(project, plot, "A");
+  assert.equal(plot.importedAxes.x.channel, "PE-A"); assert.equal(plot.importedAxes.x.w, .8);
+});
+test("comparison legends occupy a band above the shared plotting and gate-editing area", () => {
+  const data = { mode: "histogram", xRange: [0, 1], yRange: [0, 108], histogramSeries: [{}, {}] };
+  const stage = { clientWidth: 400, clientHeight: 320, getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 320 }) };
+  const geometry = renderer.geometry(stage, data);
+  assert.equal(geometry.top, 63);
+  assert.equal(geometry.contains({ clientX: 100, clientY: 40 }), false);
+  assert.equal(geometry.contains({ clientX: 100, clientY: 100 }), true);
+  assert.equal(renderer.histogramLegendHeight({ ...data, mode: "scatter" }), 0);
+});

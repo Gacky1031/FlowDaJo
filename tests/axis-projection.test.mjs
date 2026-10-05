@@ -1,16 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import ts from "typescript";
+import { tsModuleUrl } from "./ts-module.mjs";
 import { readFileSync, mkdtempSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { rWorker } from "./r-worker.mjs";
 
-const moduleUrl = (source) => "data:text/javascript;base64," + Buffer.from(ts.transpileModule(source, {
-  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 },
-}).outputText).toString("base64");
-const modelUrl = moduleUrl(readFileSync("src/model.ts", "utf8"));
-const projection = await import(moduleUrl(readFileSync("src/gate-projection.ts", "utf8").replace('"./model"', JSON.stringify(modelUrl))));
+const projection = await import(tsModuleUrl("src/gate-projection.ts"));
 const axis = (channel, scale = "linear") => ({ channel, scale, w: .5, t: 262144, m: 4.5, a: 0 });
 
 test("axis transforms preserve gate counts, outlines, pointer coordinates and vector exports", async () => {

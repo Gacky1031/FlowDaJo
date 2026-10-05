@@ -1163,6 +1163,13 @@ th:first-child {
   background: #dcebf6;
   color: #145e94;
 }
+.plot-card.histogram-drop-target { outline: 3px solid #26836b; outline-offset: 3px; z-index: 4; }
+.plot-card.histogram-drop-target::after { content: "ここに重ねてヒストグラム比較"; position: absolute; top: 62px; left: 12px; right: 12px; padding: 5px; text-align: center; background: #26836b; color: white; z-index: 8; pointer-events: none; font-size: 12px; }
+.histogram-comparison-dialog { width: min(660px, 90vw); }
+.histogram-series-editor { max-height: 52vh; overflow: auto; }
+.histogram-color-swatches { display: flex; gap: 8px; margin: 8px 0; }
+.histogram-color-swatches button { width: 28px; height: 28px; padding: 0; border: 2px solid transparent; border-radius: 5px; background: var(--swatch-color); }
+.histogram-color-swatches button[aria-pressed="true"] { outline: 2px solid #233c53; outline-offset: 2px; }
 .population.selected-gate,
 .statistics-widget tr.selected-gate {
   box-shadow: inset 0 0 0 2px #e39b36;

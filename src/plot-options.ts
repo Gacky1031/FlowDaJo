@@ -7,7 +7,7 @@ export function editPlotOptions(
   const dialog = document.createElement("dialog");
   dialog.className = "axis-dialog";
   dialog.setAttribute("aria-label", "プロット表示設定");
-  dialog.innerHTML = `<form><div class="axis-dialog-heading"><h2>プロット表示設定</h2><button type="button" data-close aria-label="閉じる">×</button></div><label>表示形式<select name="mode">${plotModes.map((m) => `<option value="${m.value}">${m.label}</option>`).join("")}</select></label><fieldset><legend>ワークシート・PDFの表示</legend><label class="check"><input name="showGateNames" type="checkbox"> 分画名を表示</label><label class="check"><input name="showGatePercentages" type="checkbox"> 分画の割合を表示</label><label>分画ラベルの文字サイズ (pt)<input name="gateLabelFontSizePt" type="number" min="6" max="24" step="0.25"></label><p class="hint">ワークシートとPDFに反映します。分画名・割合のラベルはドラッグで移動できます。</p><button type="button" data-reset-labels>分画ラベル位置を既定に戻す</button><label class="check"><input name="showXAxis" type="checkbox"> X軸を表示</label></fieldset><fieldset><legend>点と色</legend><div class="two"><label>点の大きさ (px)<input name="dotSize" type="number" min="0.5" max="8" step="0.1"></label><label>不透明度 (0–1)<input name="dotOpacity" type="number" min="0.05" max="1" step="0.05"></label></div><label>点・ヒストグラムの色<input name="color" type="color"></label></fieldset><fieldset><legend>密度 / 等高線</legend><label class="check"><input name="smoothing" type="checkbox">平滑化する</label><label class="check"><input name="showOutliers" type="checkbox">最外等高線の外のイベントも点で表示</label><label>等高線の確率間隔<select name="contourPercent"><option value="5">5%</option><option value="10">10%</option><option value="20">20%</option></select></label><p class="hint">密度計算には表示範囲内の全イベントを使用します。点の描画は最大12,000イベントです。</p></fieldset><fieldset><legend>Histogram / CDF</legend><div class="two"><label>ビン数<select name="bins"><option value="64">64</option><option value="128">128</option><option value="256">256</option><option value="512">512</option></select></label><label>ヒストグラム縦軸<select name="histogramNormalize"><option value="count">Count</option><option value="percent">% of events</option><option value="mode">% of maximum</option></select></label></div><p class="hint">CDFは表示範囲内のイベントの累積割合（%）です。</p></fieldset><div class="axis-dialog-actions"><button type="button" data-default>既定値</button><span class="spacer"></span><button type="button" data-cancel>キャンセル</button><button type="submit" class="primary">表示設定を適用</button></div></form>`;
+  dialog.innerHTML = `<form><div class="axis-dialog-heading"><h2>プロット表示設定</h2><button type="button" data-close aria-label="閉じる">×</button></div><label>表示形式<select name="mode">${plotModes.map((m) => `<option value="${m.value}">${m.label}</option>`).join("")}</select></label><fieldset><legend>ワークシート・PDFの表示</legend><label class="check"><input name="showGateNames" type="checkbox"> 分画名を表示</label><label class="check"><input name="showGatePercentages" type="checkbox"> 分画の割合を表示</label><label>分画ラベルの文字サイズ (pt)<input name="gateLabelFontSizePt" type="number" min="6" max="24" step="0.25"></label><p class="hint">ワークシートとPDFに反映します。分画名・割合のラベルはドラッグで移動できます。</p><button type="button" data-reset-labels>分画ラベル位置を既定に戻す</button><label class="check"><input name="showXAxis" type="checkbox"> X軸を表示</label></fieldset><fieldset><legend>点と色</legend><div class="two"><label>点の大きさ (px)<input name="dotSize" type="number" min="0.5" max="8" step="0.1"></label><label>不透明度 (0–1)<input name="dotOpacity" type="number" min="0.05" max="1" step="0.05"></label></div><label>点・ヒストグラムの色<input name="color" type="color"></label></fieldset><fieldset><legend>密度 / 等高線</legend><label class="check"><input name="smoothing" type="checkbox">平滑化する</label><label class="check"><input name="showOutliers" type="checkbox">最外等高線の外のイベントも点で表示</label><label>等高線の確率間隔<select name="contourPercent"><option value="5">5%</option><option value="10">10%</option><option value="20">20%</option></select></label><p class="hint">密度計算には表示範囲内の全イベントを使用します。点の描画は最大12,000イベントです。</p></fieldset><fieldset><legend>Histogram / CDF</legend><label class="check"><input name="histogramSmoothing" type="checkbox">ヒストグラムを平滑化する</label><div class="two"><label>ビン数<select name="bins"><option value="64">64</option><option value="128">128</option><option value="256">256</option><option value="512">512</option></select></label><label>ヒストグラム縦軸<select name="histogramNormalize"><option value="count">Count</option><option value="percent">% of events</option><option value="max">%max</option><option value="mode">Modal</option></select></label></div><p class="hint">%maxとModalは各曲線のピークを100に揃えます。平滑化は生の細胞数やゲート判定を変えません。CDFは累積割合（%）です。</p></fieldset><div class="axis-dialog-actions"><button type="button" data-default>既定値</button><span class="spacer"></span><button type="button" data-cancel>キャンセル</button><button type="submit" class="primary">表示設定を適用</button></div></form>`;
   const form = dialog.querySelector("form")!;
   const el = (key: string) => form.elements.namedItem(key) as HTMLInputElement;
   let resetLabelPositions = false;
@@ -28,6 +28,7 @@ export function editPlotOptions(
     }))
       el(key).value = String(v);
     el("smoothing").checked = value.smoothing !== false;
+    el("histogramSmoothing").checked = value.histogramSmoothing === true;
     el("showOutliers").checked = value.showOutliers !== false;
     el("showGateNames").checked = value.showGateNames !== false;
     el("showGatePercentages").checked = value.showGatePercentages !== false;
@@ -50,6 +51,7 @@ export function editPlotOptions(
       dotOpacity: 0.6,
       color: "#146b8c",
       smoothing: true,
+      histogramSmoothing: false,
       showOutliers: true,
       showGateNames: true,
       showGatePercentages: true,
@@ -68,6 +70,7 @@ export function editPlotOptions(
       dotOpacity: +el("dotOpacity").value,
       color: el("color").value,
       smoothing: el("smoothing").checked,
+      histogramSmoothing: el("histogramSmoothing").checked,
       showOutliers: el("showOutliers").checked,
       showGateNames: el("showGateNames").checked,
       showGatePercentages: el("showGatePercentages").checked,

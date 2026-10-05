@@ -1,5 +1,6 @@
 import type { Axis, Sample, WorksheetPlot } from "./types";
 import { axis, oneDimensional, scaleLabel } from "./model";
+import { histogramAxisLabel } from "./histogram";
 
 export type AxisSide = "x" | "y";
 export type AxisScope = "plot" | "sheet";
@@ -20,7 +21,7 @@ export function axisLabels(plot: WorksheetPlot, channels: Sample["channels"]) {
   return (["x", "y"] as const)
     .map((side) => {
       if (side === "y" && oneDimensional(plot))
-        return `<span class="axis-label axis-y counts-label" title="分布の縦軸">${plot.mode === "cdf" ? "Cumulative %" : plot.histogramNormalize === "percent" ? "% of events" : plot.histogramNormalize === "mode" ? "% of maximum" : "Count"}</span>`;
+        return plot.mode === "cdf" ? '<span class="axis-label axis-y counts-label">Cumulative %</span>' : `<button class="axis-label axis-y counts-label" data-histogram-axis="${plot.id}" title="クリック: 縦軸の正規化 / 平滑化" aria-label="ヒストグラム縦軸の設定" aria-haspopup="menu">${histogramAxisLabel(plot.histogramNormalize)}</button>`;
       const a = plot[side],
         label = channels.find((c) => c.id === a.channel)?.label || a.channel;
       const text = [...new Set([...label.split(" · "), a.channel])].join(" · ");
@@ -188,6 +189,7 @@ export function editAxis(
   apply: (a: Axis, scope: AxisScope) => void,
   preview?: (a: Axis) => Promise<AxisPreview>,
   suggest?: () => Promise<AxisSuggestion>,
+  importSettings?: Axis,
 ) {
   const { dialog, close } = dialogShell(
     "axis-dialog",
@@ -201,7 +203,13 @@ export function editAxis(
     form.elements.namedItem(key) as HTMLInputElement;
   const error = dialog.querySelector<HTMLElement>("[role=alert]")!;
   let previewTimer: ReturnType<typeof setTimeout> | undefined;
+  let suggestionTimer: ReturnType<typeof setTimeout> | undefined;
   let previewSequence = 0;
+  dialog.addEventListener("close", () => {
+    clearTimeout(previewTimer);
+    clearTimeout(suggestionTimer);
+    ++previewSequence;
+  });
   const previewBody = dialog.querySelector<HTMLElement>("[data-axis-preview]")!;
   let recommendation: AxisSuggestion | undefined;
   const recommendationButton = dialog.querySelector<HTMLButtonElement>("[data-recommend]")!;
@@ -227,6 +235,7 @@ export function editAxis(
     if (issue) { previewBody.textContent = issue; return; }
     previewBody.textContent = "分布を計算中…";
     previewTimer = setTimeout(async () => {
+      if (!dialog.open || sequence !== previewSequence) return;
       try {
         const result = await preview(a);
         if (sequence !== previewSequence || !dialog.open) return;
@@ -271,6 +280,14 @@ export function editAxis(
   dialog.querySelector<HTMLElement>("[data-cancel]")!.onclick = close;
   dialog.querySelector<HTMLElement>("[data-default]")!.onclick = () =>
     fill(axis(current.channel));
+  const resetImport = document.createElement("button");
+  resetImport.type = "button";
+  resetImport.dataset.restoreImport = "";
+  resetImport.textContent = "取り込み時の設定へ戻す";
+  resetImport.disabled = !importSettings;
+  resetImport.title = "取り込み時のスケール・範囲・Logicle設定をプレビューします。適用して閉じると反映します。";
+  resetImport.onclick = () => { if (importSettings) fill(importSettings); };
+  dialog.querySelector("[data-default]")!.after(resetImport);
   form.onsubmit = (e) => {
     e.preventDefault();
     const a: Axis = {
@@ -297,12 +314,15 @@ export function editAxis(
   };
   fill(current);
   dialog.showModal();
-  if (suggest) void suggest().then((result) => {
+  if (suggest) suggestionTimer = setTimeout(() => {
     if (!dialog.open) return;
-    recommendation = result;
-    recommendationButton.disabled = false;
-    recommendationText.textContent = `${result.reason}（${result.total.toLocaleString()} events）`;
-  }).catch((error) => { if (dialog.open) recommendationText.textContent = `推奨設定を取得できません: ${String(error)}`; });
+    void suggest().then((result) => {
+      if (!dialog.open) return;
+      recommendation = result;
+      recommendationButton.disabled = false;
+      recommendationText.textContent = `${result.reason}（${result.total.toLocaleString()} events）`;
+    }).catch((error) => { if (dialog.open) recommendationText.textContent = `推奨設定を取得できません: ${String(error)}`; });
+  }, 180);
   else recommendationText.textContent = "データの読み込み後に利用できます。";
   schedulePreview();
   input("scale").focus();

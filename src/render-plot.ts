@@ -34,12 +34,15 @@ const fallbackTick = (v: number) => {
   return `${+v.toPrecision(4)}`;
 };
 
+export function histogramLegendHeight(d: WorksheetData) {
+  return d.mode === "histogram" && (d.histogramSeries?.length ?? 0) > 1 ? d.histogramSeries!.length * 15 + 8 : 0;
+}
 export function geometry(stage: HTMLElement, d: WorksheetData) {
   const w = stage.clientWidth,
     h = stage.clientHeight,
     left = 70,
     right = w - 30,
-    top = 25,
+    top = 25 + histogramLegendHeight(d),
     bottom = h - 53,
     dx = d.xRange[1] - d.xRange[0] || 1,
     dy = d.yRange[1] - d.yRange[0] || 1,
@@ -271,6 +274,7 @@ function histogram(
   d: WorksheetData,
   cdf: boolean,
   color: string,
+  smoothing = false,
 ) {
   const cdfData = (d as WorksheetData & { cdf?: { x: number[]; y: number[] } })
     .cdf;
@@ -292,21 +296,40 @@ function histogram(
     ctx.stroke();
     return;
   }
-  const h = d.histogram;
-  if (!h || h.edges.length < 2 || !h.counts.length) return;
-  const n = Math.min(h.counts.length, h.edges.length - 1);
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.moveTo(g.px(h.edges[0]), g.bottom);
-  for (let i = 0; i < n; i++) {
-    const count = h.counts[i];
-    if (!finite(count)) continue;
-    ctx.lineTo(g.px(h.edges[i]), g.py(count));
-    ctx.lineTo(g.px(h.edges[i + 1]), g.py(count));
+  const series = d.histogramSeries?.length ? d.histogramSeries : d.histogram ? [{ ...d.histogram, color }] : [];
+  for (const h of series) {
+    if (!(h.edges.length > 1 && h.counts.length) || ("error" in h && h.error)) continue;
+    const n = Math.min(h.counts.length, h.edges.length - 1);
+    ctx.beginPath(); ctx.moveTo(g.px(h.edges[0]), g.bottom);
+    for (let i = 0; i < n; i++) {
+      if (!finite(h.counts[i])) continue;
+      if (smoothing) ctx.lineTo(g.px((h.edges[i] + h.edges[i + 1]) / 2), g.py(h.counts[i]));
+      else { ctx.lineTo(g.px(h.edges[i]), g.py(h.counts[i])); ctx.lineTo(g.px(h.edges[i + 1]), g.py(h.counts[i])); }
+    }
+    ctx.lineTo(g.px(h.edges[n]), g.bottom); ctx.closePath();
+    ctx.fillStyle = `rgba(${rgb(h.color ?? color).join(",")},${series.length > 1 ? .09 : .22})`;
+    ctx.fill(); ctx.strokeStyle = h.color ?? color; ctx.lineWidth = 1.6; ctx.lineJoin = "round"; ctx.stroke();
   }
-  ctx.lineTo(g.px(h.edges[n]), g.bottom);
-  ctx.closePath();
-  ctx.fill();
+}
+function histogramLegend(ctx: CanvasRenderingContext2D, g: ReturnType<typeof geometry>, d: WorksheetData, color: string) {
+  if (d.mode === "histogram" && (d.histogramSeries?.length ?? 0) > 1) {
+    const sources = d.histogramSeries!;
+    ctx.font = "10px Segoe UI, Arial, sans-serif"; ctx.textAlign = "left";
+    const available = g.right - g.left - 38;
+    const labels = sources.map((source) => {
+      let text = `${source.control ? "[Control] " : ""}${source.error ? "[Unavailable] " : ""}${source.sampleName} | ${["All events", ...source.population].join(" / ")} · N=${source.total.toLocaleString()}`;
+      while (text.length > 3 && ctx.measureText(text).width > available) text = text.slice(0, -2) + "…";
+      return text;
+    });
+    const width = Math.min(available, Math.max(...labels.map((label) => ctx.measureText(label).width))) + 27;
+    const left = g.left, top = 25;
+    ctx.fillStyle = "rgba(255,255,255,.93)"; ctx.fillRect(left, top, width, sources.length * 15 + 5);
+    sources.forEach((source, index) => {
+      const y = top + 10 + index * 15;
+      ctx.strokeStyle = source.color ?? color; ctx.beginPath(); ctx.moveTo(left + 4, y); ctx.lineTo(left + 19, y); ctx.stroke();
+      ctx.fillStyle = "#30363a"; ctx.fillText(labels[index], left + 24, y);
+    });
+  }
 }
 
 export function drawPlot(
@@ -386,7 +409,7 @@ export function drawPlot(
   const den = (d as WorksheetData & { density?: Density }).density;
   const color = style?.color ?? d.color ?? "#146b8c";
   if (mode === "histogram" || mode === "cdf")
-    histogram(ctx, g, d, mode === "cdf", color);
+    histogram(ctx, g, d, mode === "cdf", color, style?.histogramSmoothing === true);
   else if (mode === "density" && den) {
     densityGrid(ctx, g, den);
     if ((style?.showOutliers ?? d.showOutliers) !== false && den.levels.length)
@@ -403,6 +426,9 @@ export function drawPlot(
       points(ctx, g, d, style, false, true, Math.min(...den.levels));
   } else points(ctx, g, d, style, mode === "pseudocolor");
   ctx.restore();
+  histogramLegend(ctx, g, d, color);
+  const yLabel = stage.querySelector<HTMLElement>(".axis-y");
+  if (yLabel) yLabel.style.top = `${(g.top + g.bottom) / 2}px`;
 
   ctx.fillStyle = "#3e494f";
   ctx.font = "10px Segoe UI, Arial, sans-serif";
