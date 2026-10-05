@@ -85,10 +85,15 @@ export function newPlot(
   index: number,
   population: string[] = [],
 ): WorksheetPlot {
+  const channel = (name: string) => s.channels.find((item) =>
+    item.id.replace(/[-_\s]/g, "").toUpperCase() === name.replace(/[-_\s]/g, "").toUpperCase(),
+  )?.id;
+  const x = channel("FSC-A") ?? s.channels[0].id;
+  const y = channel("SSC-A") ?? s.channels.find((item) => item.id !== x)?.id ?? x;
   return {
     id: uid(),
-    x: axis(s.channels[0].id),
-    y: axis(s.channels[Math.min(1, s.channels.length - 1)].id),
+    x: axis(x),
+    y: axis(y),
     sampleId: "active",
     population,
     mode: "scatter",

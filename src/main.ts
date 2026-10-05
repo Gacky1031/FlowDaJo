@@ -1092,14 +1092,17 @@ function inspector() {
 function positionToolbarMenu(menu: HTMLDetailsElement) {
   const panel = menu.querySelector<HTMLElement>(":scope > div");
   if (!panel) return;
+  const supportsPopover = typeof panel.showPopover === "function" && CSS.supports("selector(:popover-open)");
+  panel.dataset.menuSurface = supportsPopover ? "popover" : "fallback";
+  if (!supportsPopover) panel.removeAttribute("popover");
   if (!menu.open) {
-    if (panel.matches(":popover-open")) panel.hidePopover();
+    if (supportsPopover && panel.matches(":popover-open")) panel.hidePopover();
     delete menu.dataset.positioned;
     return;
   }
   const trigger = menu.querySelector("summary");
   if (!trigger) return;
-  if (!panel.matches(":popover-open")) panel.showPopover();
+  if (supportsPopover && !panel.matches(":popover-open")) panel.showPopover();
   const bounds = trigger.getBoundingClientRect();
   const margin = 8;
   const top = Math.max(margin, Math.min(bounds.bottom + 3, window.innerHeight - margin - 40));

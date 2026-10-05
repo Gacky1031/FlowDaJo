@@ -94,9 +94,14 @@ printf 'Minimum macOS version required by bundled R: %s\n' "$R_MIN_MACOS"
 npm run tauri build -- --config src-tauri/tauri.macos.conf.json --config "{\"bundle\":{\"macOS\":{\"minimumSystemVersion\":\"$R_MIN_MACOS\"}}}"
 
 DMG_DIR="$ROOT/src-tauri/target/release/bundle/dmg"
-shopt -s nullglob
-DMGS=("$DMG_DIR"/*.dmg)
-(( ${#DMGS[@]} > 0 )) || die "ビルドは終了しましたがDMGが見つかりません: $DMG_DIR"
+VERSION="$(node -p 'require("./package.json").version')"
+case "$(uname -m)" in
+  arm64) DMG_ARCH=aarch64; DISTRIBUTION_ARCH=aarch64 ;;
+  x86_64) DMG_ARCH=x64; DISTRIBUTION_ARCH=x64 ;;
+  *) die "Unsupported Mac architecture: $(uname -m)" ;;
+esac
+DMGS=("$DMG_DIR"/FlowDaJo_"$VERSION"_"$DMG_ARCH".dmg)
+[[ -f "${DMGS[0]}" ]] || die "ビルドは終了しましたがDMGが見つかりません: ${DMGS[0]}"
 
 info "Verifying the R runtime inside the DMG"
 MOUNT_POINT="$(mktemp -d "${TMPDIR:-/tmp}/flowdajo-dmg.XXXXXX")"
@@ -111,8 +116,11 @@ cleanup_mount
 trap - EXIT
 
 info "Build complete"
-printf 'DMG output:\n'
-for dmg in "${DMGS[@]}"; do
-  ls -lh "$dmg"
-done
+RELEASE_DIR="$ROOT/release/$VERSION"
+mkdir -p "$RELEASE_DIR"
+DMG_NAME="FlowDaJo-$VERSION-macos-$DISTRIBUTION_ARCH.dmg"
+cp "${DMGS[0]}" "$RELEASE_DIR/$DMG_NAME"
+(cd "$RELEASE_DIR" && shasum -a 256 "$DMG_NAME" > "SHA256SUMS-$VERSION-macos-$DISTRIBUTION_ARCH.txt")
+printf 'Distribution output:\n'
+ls -lh "$RELEASE_DIR/$DMG_NAME"
 printf '\nこのMacのCPU向けビルドです。配布用の署名・公証はこのスクリプトでは行いません。\n'

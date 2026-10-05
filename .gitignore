@@ -4,9 +4,11 @@ src-tauri/target/
 .tools/
 artifacts/
 *.log
-release/
+release/*
+!release/README.md
 test-results/
 playwright-report/
+__pycache__/
 src-tauri/runtime/R/
 src-tauri/runtime/WebView2/
 src-tauri/runtime/sources/

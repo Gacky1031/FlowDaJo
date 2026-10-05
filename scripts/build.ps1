@@ -4,4 +4,5 @@ if (Test-Path "$env:USERPROFILE\.cargo\bin") { $env:PATH = "$env:USERPROFILE\.ca
 npm.cmd ci
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 npm.cmd run tauri build
-exit $LASTEXITCODE
+if ($LASTEXITCODE) { exit $LASTEXITCODE }
+& "$PSScriptRoot\collect-windows-installer.ps1"

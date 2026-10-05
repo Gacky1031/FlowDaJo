@@ -5,9 +5,10 @@ export default defineConfig({
   expect: { timeout: 15000 },
   workers: 1,
   use: {
+    browserName: process.env.PLAYWRIGHT_BROWSER === "webkit" ? "webkit" : "chromium",
     baseURL: "http://127.0.0.1:1420",
     viewport: { width: 1480, height: 960 },
-    channel: process.env.PLAYWRIGHT_CHANNEL || "msedge",
+    channel: process.env.PLAYWRIGHT_BROWSER === "webkit" ? undefined : process.env.PLAYWRIGHT_CHANNEL || "msedge",
     headless: true,
   },
   webServer: {

@@ -2,6 +2,8 @@
 
 FlowDaJoは、FCSデータのゲーティング、サンプル比較、PDF出力を行うフローサイトメトリー解析アプリです。解析エンジンにはRとflowCoreを使用します。
 
+インストーラーとポータブル版は [GitHub Releases](https://github.com/Gacky1031/FlowDaJo/releases) から入手できます。ローカルで作成した配布ファイルは `release/<version>/` にあります。フォルダの役割とビルド方法は [配布手順](docs/RELEASING.md) を参照してください。
+
 ## 基本のワークフロー
 
 1. **データを取り込む** — FACSDivaのXMLと対応するFCSデータを「DIVA XML」または「DIVAフォルダ」から読み込みます。複数のワークシートがある場合は、取り込むシートを選びます。FCSファイルだけを読み込むこともできます。

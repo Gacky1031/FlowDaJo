@@ -1,10 +1,12 @@
 """Verify the portable ZIP against its staging directory and emit SHA-256 records."""
-import hashlib, json, sys, zipfile
+import hashlib, json, re, sys, zipfile
 from pathlib import Path
 version = sys.argv[1] if len(sys.argv)>1 else json.loads((Path(__file__).resolve().parent.parent/"package.json").read_text(encoding="utf-8"))["version"]
+assert re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][\w.-]+)?",version),"Invalid release version"
 root=Path(__file__).resolve().parent.parent
-folder=Path(sys.argv[2]).resolve() if len(sys.argv)>2 else root/"release"/f"FlowDaJo-{version}"
-archive=Path(sys.argv[3]).resolve() if len(sys.argv)>3 else root/"release"/f"FlowDaJo-{version}-windows-x64-portable.zip"
+release=root/"release"/version
+folder=Path(sys.argv[2]).resolve() if len(sys.argv)>2 else root/"artifacts"/"packaging"/version/f"FlowDaJo-{version}"
+archive=Path(sys.argv[3]).resolve() if len(sys.argv)>3 else release/f"FlowDaJo-{version}-windows-x64-portable.zip"
 def sha(path):
     h=hashlib.sha256()
     with path.open("rb") as f:
@@ -15,13 +17,14 @@ with zipfile.ZipFile(archive) as z:
     entries={i.filename.replace(chr(92),"/"):i for i in z.infolist() if not i.is_dir()}
     assert entries.keys()==expected.keys(),"ZIP file inventory mismatch"
     for name,p in expected.items():assert entries[name].file_size==p.stat().st_size,name
-    critical=["FlowDaJo.exe","r/core.R","r/worker.R","r/worksheet.R","r/diva.R","runtime/R/bin/Rscript.exe","runtime/WebView2/msedgewebview2.exe","README.md","LICENSE","docs/VALIDATION-"+version+".md","runtime/THIRD-PARTY-NOTICES.md"]
+    critical=["FlowDaJo.exe","r/core.R","r/worker.R","r/worksheet.R","r/diva.R","runtime/R/bin/Rscript.exe","runtime/WebView2/msedgewebview2.exe","README.md","LICENSE","docs/VALIDATION-"+version+".md","docs/RELEASING.md","docs/releases/"+version+".md","runtime/THIRD-PARTY-NOTICES.md"]
     for item in critical:
         key=folder.name+"/"+item
         assert hashlib.sha256(z.read(entries[key])).hexdigest().upper()==sha(folder/item),item
-setup=root/"release"/f"FlowDaJo-{version}-windows-x64-setup.exe"
+setup=release/f"FlowDaJo-{version}-windows-x64-setup.exe"
 records=[{"file":p.name,"bytes":p.stat().st_size,"sha256":sha(p)} for p in [archive,setup]]
-(root/"release"/f"SHA256SUMS-{version}.txt").write_text("\n".join(r["sha256"]+"  "+r["file"] for r in records)+"\n",encoding="utf-8")
+(release/f"SHA256SUMS-{version}.txt").write_text("\n".join(r["sha256"]+"  "+r["file"] for r in records)+"\n",encoding="utf-8")
 result={"version":version,"files":len(expected),"criticalHashes":len(critical),"artifacts":records}
+(root/"artifacts").mkdir(exist_ok=True)
 (root/"artifacts"/f"release-{version}-validation.json").write_text(json.dumps(result,indent=2),encoding="utf-8")
 print(json.dumps(result,indent=2))
