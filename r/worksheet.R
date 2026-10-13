@@ -882,7 +882,7 @@ export_print_pages <- function(req,data,cards,widgets) {
   elements <- c(plot_elements,widget_elements,active_plot)
   width_of <- function(item) item$value$width %||% if(item$kind %in% c("statistics","compensation"))640 else 344
   height_of <- function(item) item$value$height %||% if(identical(item$kind,"compensation"))360 else if(identical(item$kind,"statistics"))340 else 314
-  files <- character(); success <- FALSE; printed <- character(); page_count <- 0L
+  files <- character(); page_crops <- list(); success <- FALSE; printed <- character(); page_count <- 0L
   on.exit(if(!success && length(files))unlink(files),add=TRUE)
   report <- isTRUE(req$reportBySample)
   sample_groups <- if(report) lapply(req$project$samples,function(s)
@@ -894,30 +894,48 @@ export_print_pages <- function(req,data,cards,widgets) {
     scale <- page$scale %||% 1
     width <- (if(portrait)794 else 1123)*scale
     height <- (if(portrait)1123 else 794)*scale
-    safe_margin <- 16*scale
     left <- page$left %||% 0; top <- page$top %||% 0
     page_items <- Filter(function(item) {
       box <- item$value
-      (box$left %||% 0) >= left+safe_margin && (box$top %||% 0) >= top+safe_margin &&
-        (box$left %||% 0)+width_of(item) <= left+width-safe_margin &&
-        (box$top %||% 0)+height_of(item) <= top+height-safe_margin
+      item_left <- box$left %||% 0; item_top <- box$top %||% 0
+      item_left < left+width && item_left+width_of(item) > left &&
+        item_top < top+height && item_top+height_of(item) > top
     },page_elements)
+    # Draw intersecting items at their full worksheet size on an expanded
+    # temporary canvas. The PDF host crops that canvas back to the A4 page, so
+    # off-page parts are clipped instead of causing the whole card to vanish.
+    item_lefts <- vapply(page_items,function(item)(item$value$left %||% 0)-left,0.0)
+    item_tops <- vapply(page_items,function(item)(item$value$top %||% 0)-top,0.0)
+    item_rights <- item_lefts+vapply(page_items,width_of,0.0)
+    item_bottoms <- item_tops+vapply(page_items,height_of,0.0)
+    overhang_left <- if(length(page_items))max(0,-min(0,item_lefts))else 0
+    overhang_right <- if(length(page_items))max(0,max(width,item_rights)-width)else 0
+    overhang_top <- if(length(page_items))max(0,-min(0,item_tops))else 0
+    overhang_bottom <- if(length(page_items))max(0,max(height,item_bottoms)-height)else 0
+    canvas_width <- width+overhang_left+overhang_right
+    canvas_height <- height+overhang_top+overhang_bottom
     # Preserve worksheet element order when painting overlapping items. Sorting
     # by position changes their stacking order relative to the canvas and can
     # cover most of an earlier plot when cards overlap.
     file <- tempfile(pattern="flowdesk-page-",tmpdir=dirname(req$path),fileext=".pdf")
     files <- c(files,file)
     page_count <- page_count + 1L
-    grDevices::cairo_pdf(file,width=if(portrait)210/25.4 else 297/25.4,
-      height=if(portrait)297/25.4 else 210/25.4,onefile=TRUE,
+    paper_width_in <- if(portrait)210/25.4 else 297/25.4
+    paper_height_in <- if(portrait)297/25.4 else 210/25.4
+    grDevices::cairo_pdf(file,width=canvas_width/width*paper_width_in,
+      height=canvas_height/height*paper_height_in,onefile=TRUE,
       family=if(.Platform$OS.type=="windows")"Yu Gothic" else "sans")
     tryCatch({
       if(!length(page_items)) {
         plot.new()
       } else for(i in seq_along(page_items)) {
         item <- page_items[[i]]; value <- item$value
-        x1 <- (value$left-left)/width; x2 <- (value$left+width_of(item)-left)/width
-        y1 <- (value$top-top)/height; y2 <- (value$top+height_of(item)-top)/height
+        item_left <- (value$left-left+overhang_left)/canvas_width
+        item_right <- (value$left+width_of(item)-left+overhang_left)/canvas_width
+        item_top <- (value$top-top+overhang_top)/canvas_height
+        item_bottom <- (value$top+height_of(item)-top+overhang_top)/canvas_height
+        x1 <- item_left; x2 <- item_right
+        y1 <- item_top; y2 <- item_bottom
         physical_width <- width_of(item)/width*(if(portrait)210/25.4 else 297/25.4)
         compact <- physical_width < 3.7
         par(fig=c(x1,x2,1-y2,1-y1),new=i>1,
@@ -945,10 +963,16 @@ export_print_pages <- function(req,data,cards,widgets) {
         printed <- c(printed,value$id)
       }
     },finally=dev.off())
+    page_crops[[length(page_crops)+1L]] <- as.list(c(
+      overhang_left/width*paper_width_in*72,
+      overhang_bottom/height*paper_height_in*72,
+      paper_width_in*72,
+      paper_height_in*72
+    ))
   }
   success <- TRUE
   missing <- Filter(function(card)isTRUE(card$reportPopulationMissing),cards)
-  list(path=req$path,pageFiles=as.list(files),pages=page_count,
+  list(path=req$path,pageFiles=as.list(files),pageCrops=page_crops,pages=page_count,
        plots=sum(vapply(cards,function(card)card$id %in% printed,FALSE)),
        outside=sum(!vapply(elements,function(item)item$value$id %in% printed,FALSE)),
        missingPopulations=as.list(lapply(missing,function(card)list(

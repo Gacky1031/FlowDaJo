@@ -183,7 +183,36 @@ pub fn call(script: PathBuf, storage: PathBuf, mut payload: Value) -> Result<Val
                 .filter_map(|value| value.as_str().map(PathBuf::from))
                 .collect();
             let output = payload["path"].as_str().ok_or("Missing PDF output path")?;
-            let merged = super::pdf::merge_pages(&files, &PathBuf::from(output));
+            let crops: Vec<Option<[f64; 4]>> = if let Some(values) = data["pageCrops"].as_array() {
+                values
+                    .iter()
+                    .map(|value| {
+                        if value.is_null() {
+                            return Ok(None);
+                        }
+                        let items = value
+                            .as_array()
+                            .ok_or("Invalid PDF page crop")?;
+                        if items.len() != 4 {
+                            return Err("Invalid PDF page crop".to_string());
+                        }
+                        let mut crop = [0.0; 4];
+                        for (index, item) in items.iter().enumerate() {
+                            crop[index] = item
+                                .as_f64()
+                                .ok_or("Invalid PDF page crop")?;
+                        }
+                        Ok(Some(crop))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?
+            } else {
+                Vec::new()
+            };
+            let merged = super::pdf::merge_pages_with_crops(
+                &files,
+                &PathBuf::from(output),
+                &crops,
+            );
             for file in files {
                 let _ = std::fs::remove_file(file);
             }
