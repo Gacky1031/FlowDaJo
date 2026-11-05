@@ -113,6 +113,10 @@ export interface PlotStyle {
   histogramColor?: string;
   showGateNames?: boolean;
   showGatePercentages?: boolean;
+  /** Draw gate outlines in black instead of each gate's color. */
+  blackGateOutlines?: boolean;
+  /** Draw gate names and percentages in black instead of each gate's color. */
+  blackGateLabels?: boolean;
   showXAxis?: boolean;
 }
 export interface WorksheetPlot extends Plot, PlotStyle {

@@ -51,7 +51,7 @@ test("shared bins, mass-preserving smoothing, normalization, control labels and 
       const result = await worker.call({ action: "worksheet", project, sampleId: "A", plots: [card] });
       assert.deepEqual(result.errors, []); return result.plots[card.id];
     };
-    const raw = await get(base); const smooth = await get({ ...base, histogramSmoothing: true });
+    const raw = await get({ ...base, histogramSmoothing: false }); const smooth = await get({ ...base, histogramSmoothing: true });
     assert.equal(raw.histogramSeries.length, 2);
     assert.deepEqual(raw.histogramSeries[0].edges, raw.histogramSeries[1].edges);
     assert.equal(raw.histogramSeries[0].control, true); assert.equal(raw.histogramSeries[0].color, "#666666");

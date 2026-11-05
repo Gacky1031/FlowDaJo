@@ -979,6 +979,9 @@ dialog.axis-dialog {
 .statistics-widget .resize-grip { background: linear-gradient(135deg, transparent 50%, #dce7ee 50%); }
 .statistics-settings-dialog { width: min(520px, 95vw); max-height: 85vh; }
 .statistics-settings-dialog fieldset { margin: 10px 0; }
+.statistics-csv-dialog { width: min(540px, 95vw); max-height: 85vh; }
+.statistics-csv-dialog fieldset { margin: 10px 0; }
+.csv-options-error { color: #ab392d; font-size: 12px; margin: 8px 0; }
 .statistics-font-size-control { display: grid; grid-template-columns: minmax(120px, 1fr) 76px auto; align-items: center; gap: 10px; }
 .statistics-font-size-control input[type="number"] { width: 76px; }
 .statistics-font-size-control span { color: #718391; font-size: 12px; }

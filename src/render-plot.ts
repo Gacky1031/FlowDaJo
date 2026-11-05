@@ -409,7 +409,7 @@ export function drawPlot(
   const den = (d as WorksheetData & { density?: Density }).density;
   const color = style?.color ?? d.color ?? "#146b8c";
   if (mode === "histogram" || mode === "cdf")
-    histogram(ctx, g, d, mode === "cdf", color, style?.histogramSmoothing === true);
+    histogram(ctx, g, d, mode === "cdf", color, style?.histogramSmoothing !== false);
   else if (mode === "density" && den) {
     densityGrid(ctx, g, den);
     if ((style?.showOutliers ?? d.showOutliers) !== false && den.levels.length)

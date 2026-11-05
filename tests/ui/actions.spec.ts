@@ -121,10 +121,18 @@ test("all seven plot modes, plot styling, log axes and vector/CSV UI exports", a
   expect(plot.dotOpacity).toBe(0.85);
   expect(plot.x.scale).toBe("log");
   await clickToolbarAction(page, "#csv");
+  const csvOptions = page.getByRole("dialog", { name: "統計CSVの出力項目" });
+  await expect(csvOptions.locator('[name="count"]')).toBeChecked();
+  await expect(csvOptions.locator('[name="percentParent"]')).toBeChecked();
+  await expect(csvOptions.locator('[name="percentTotal"]')).toBeChecked();
+  await expect(csvOptions.locator('[name="mfiChannel"][value="FITC-A"]')).not.toBeChecked();
+  await csvOptions.locator('[name="mfiChannel"][value="FITC-A"]').check();
+  await csvOptions.getByRole("button", { name: "出力項目を確定" }).click();
   await expect(page.locator(".status")).toContainText("統計CSVを保存しました");
   const csv = readFileSync("artifacts/ui-statistics.csv", "utf8");
   expect(csv).toContain("16000");
   expect(csv).toContain("median:FITC-A");
+  expect(csv).not.toContain("median:PE-A");
   const stage = page.locator(".plot-stage");
   await stage.click({ position: { x: 240, y: 50 }, button: "right" });
   await page.getByRole("menuitem", { name: "図をSVGで保存…" }).click();

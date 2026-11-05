@@ -281,7 +281,9 @@ diva_worksheet_import <- function(worksheet, template, gate_info, source_hash, i
       width = max(260, diva_num(xml2::xml_attr(element, "width"), 219) * scale),
       height = max(240, diva_num(xml2::xml_attr(element, "height"), 213) * scale),
       dotSize = dot, dotOpacity = .6, color = "#146b8c", smoothing = TRUE,
-      bins = 128, contourPercent = 10, histogramNormalize = "count")
+      bins = if (identical(mode, "histogram")) 256 else 128,
+      contourPercent = 10, histogramNormalize = "count",
+      histogramSmoothing = identical(mode, "histogram"))
   }
   sheet_id <- paste0("diva-", substr(source_hash, 1, 10), "-ws", index)
   list(worksheet = list(id = sheet_id,

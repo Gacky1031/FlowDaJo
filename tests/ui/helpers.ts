@@ -10,3 +10,8 @@ export async function clickToolbarAction(page: Page, selector: string) {
 export async function clickDemo(page: Page) {
   await clickToolbarAction(page, "#demo");
 }
+
+export async function confirmStatisticsCsvOptions(page: Page) {
+  const dialog = page.getByRole("dialog", { name: "統計CSVの出力項目" });
+  await dialog.getByRole("button", { name: "出力項目を確定" }).click();
+}

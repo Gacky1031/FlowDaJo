@@ -50,11 +50,10 @@ test("histograms merge by dragging, preserve either control in expansion, and ro
   await page.locator("[data-histogram-axis]").click();
   await page.getByRole("menuitem", { name: "% Max", exact: true }).click();
   await expect(page.locator(".counts-label")).toHaveText("% Max");
-  await page.locator("[data-histogram-axis]").click({ button: "right" });
-  await page.getByRole("menuitem", { name: "ヒストグラムを平滑化", exact: true }).click();
   await page.locator("[data-plot-options]").click();
   const options = page.getByRole("dialog", { name: "プロット表示設定" });
   await expect(options.locator('[name="histogramSmoothing"]')).toBeChecked();
+  await expect(options.locator('[name="bins"]')).toHaveValue("256");
   await options.locator('[name="histogramNormalize"]').selectOption("mode");
   await options.getByRole("button", { name: "表示設定を適用" }).click();
   await expect(page.locator(".counts-label")).toHaveText("Normalized to Mode");

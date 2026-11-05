@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { resolve } from "node:path";
-import { clickToolbarAction } from "./helpers";
+import { clickToolbarAction, confirmStatisticsCsvOptions } from "./helpers";
 
 for (const fallback of [false, true]) {
   test(`toolbar menus keep fixed dimensions and usable items (${fallback ? "older WebKit fallback" : "popover"})`, async ({ page, browserName }) => {
@@ -35,6 +35,7 @@ for (const fallback of [false, true]) {
     await clickToolbarAction(page, "#demo");
     await expect(page.locator(".statistics")).toContainText("16,000");
     await clickToolbarAction(page, "#csv");
+    await confirmStatisticsCsvOptions(page);
     await expect(page.locator(".status")).toContainText("統計CSVを保存しました");
     expect(errors).toEqual([]);
   });

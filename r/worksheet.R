@@ -430,9 +430,9 @@ worksheet_plot <- function(entry, card, s, p=NULL, storage=NULL) {
     combined <- unlist(lapply(series_values,function(source)source$values),use.names=FALSE)
     xr <- display_limits(combined,card$x)
     auto_xr <- if(isTRUE(card$x$autoRange))display_limits(combined,list())else xr
-    breaks <- seq(xr[1],xr[2],length.out=as.integer(card$bins %||% 128L)+1L)
+    breaks <- seq(xr[1],xr[2],length.out=as.integer(card$bins %||% 256L)+1L)
     histogram_series <- lapply(series_values,function(source) {
-      h <- histogram_distribution(source$values,breaks,norm,isTRUE(card$histogramSmoothing))
+      h <- histogram_distribution(source$values,breaks,norm,isTRUE(card$histogramSmoothing %||% TRUE))
       source$values <- NULL
       c(source,h)
     })
@@ -505,7 +505,7 @@ worksheet_plot <- function(entry, card, s, p=NULL, storage=NULL) {
        points=list(),gateAxisMaps=gate_axis_maps(eligible_gates,card,xr,yr),xValues=I(if(length(index)) unname(render_x[index]) else numeric()),yValues=I(if(length(index)) unname(render_y[index]) else numeric()),pointDensity=I(point_density),pointColors=I(point_colors),displayGateIds=as.list(display_ids),
        histogram=histogram,histogramSeries=histogram_series,cdf=cdf,density=density,shown=if(mode %in% c("density","contour","pseudocolor","zebra","histogram","cdf")) shown_count else length(index),total=length(pool),excluded=excluded,
        dotSize=card$dotSize %||% 1.6,dotOpacity=card$dotOpacity %||% .6,color=card$color %||% "#146b8c",smoothing=card$smoothing %||% TRUE,showOutliers=card$showOutliers %||% TRUE,
-       contourPercent=card$contourPercent %||% 10,bins=card$bins %||% 128,histogramNormalize=card$histogramNormalize %||% "count",compensationEnabled=isTRUE(s$compensation$enabled),compensation=s$compensation)
+       contourPercent=card$contourPercent %||% 10,bins=card$bins %||% if(mode=="histogram")256 else 128,histogramNormalize=card$histogramNormalize %||% "count",histogramSmoothing=card$histogramSmoothing %||% identical(mode,"histogram"),compensationEnabled=isTRUE(s$compensation$enabled),compensation=s$compensation)
 }
 
 gate_path <- function(id,gates) {
@@ -522,9 +522,22 @@ export_statistics_csv <- function(req) {
   p<-check_project(req$project); if(!length(p$samples)) fail("No samples to export")
   wanted<-unlist(req$sampleIds %||% lapply(p$samples,function(s)s$id),use.names=FALSE); samples<-Filter(function(s)s$id %in% wanted,p$samples)
   if(!length(samples)) fail("No requested samples found")
-  records<-list(); channels<-unique(unlist(lapply(samples,function(s)vapply(s$channels,function(ch)ch$id,""))))
+  fields<-req$statisticsFields %||% list(count=TRUE,percentParent=TRUE,percentTotal=TRUE,mfiChannels=list())
+  include_count<-isTRUE(fields$count); include_parent<-isTRUE(fields$percentParent); include_total<-isTRUE(fields$percentTotal)
+  channels<-unique(unlist(lapply(samples,function(s)vapply(s$channels,function(ch)ch$id,"")),use.names=FALSE))
+  fluorescent_channels<-channels[!grepl("^(FSC|SSC|Time|Width|Height|Event)([-_[:space:]]|$)",channels,ignore.case=TRUE)]
+  mfi_channels<-intersect(unique(as.character(unlist(fields$mfiChannels %||% list(),use.names=FALSE))),fluorescent_channels)
+  if(!include_count && !include_parent && !include_total && !length(mfi_channels))fail("Select at least one statistics field")
+  records<-list()
   for(s in samples) { entry<-session_analysis(p,s,req$storage); gates<-entry$gates
-    for(st in entry$stats) { row<-c(list(sampleId=s$id,sampleName=s$name,path=s$path %||% "",gateId=st$id,gatePath=gate_path(st$id,gates),parent=if(is.null(st$parent)) "" else gate_path(st$parent,gates),count=st$count,percentParent=st$percentParent %||% NA_real_,percentTotal=st$percentTotal %||% NA_real_,compensation=if(isTRUE(s$compensation$enabled)) "enabled" else "disabled"),setNames(lapply(channels,function(ch)st$medians[[ch]] %||% NA_real_),paste0("median:",channels))); records[[length(records)+1]]<-row }
+    for(st in entry$stats) {
+      row<-list(sampleId=s$id,sampleName=s$name,path=s$path %||% "",gateId=st$id,gatePath=gate_path(st$id,gates),parent=if(is.null(st$parent)) "" else gate_path(st$parent,gates),compensation=if(isTRUE(s$compensation$enabled)) "enabled" else "disabled")
+      if(include_count)row$count<-st$count
+      if(include_parent)row$percentParent<-st$percentParent %||% NA_real_
+      if(include_total)row$percentTotal<-st$percentTotal %||% NA_real_
+      for(ch in mfi_channels)row[[paste0("median:",ch)]]<-st$medians[[ch]] %||% NA_real_
+      records[[length(records)+1]]<-row
+    }
   }
   headers<-names(records[[1]]); numeric_fields<-c("count","percentParent","percentTotal",grep("^median:",headers,value=TRUE))
   lines<-c(paste(vapply(headers,csv_safe,"",text=TRUE),collapse=","),vapply(records,function(r)paste(vapply(seq_along(headers),function(i)csv_safe(r[[i]],!headers[i]%in%numeric_fields),""),collapse=","),"")); tmp<-tempfile(tmpdir=dirname(req$path),fileext=".csv")
@@ -582,7 +595,7 @@ draw_histograms <- function(card,d,compact=FALSE) {
   for(source in series) {
     if(!is.null(source$error)) next
     edges <- unlist(source$edges); counts <- unlist(source$counts); color <- source$color %||% d$color
-    if(isTRUE(card$histogramSmoothing)) {
+    if(isTRUE(card$histogramSmoothing %||% TRUE)) {
       xs <- c(edges[1],(head(edges,-1)+tail(edges,-1))/2,tail(edges,1)); ys <- c(0,counts,0)
     } else {
       xs <- c(edges[1],rep(edges,each=2)[-c(1,2*length(edges))],tail(edges,1)); ys <- c(0,rep(counts,each=2),0)
@@ -653,7 +666,8 @@ draw_child_gates <- function(card,d,project,statistics=list()) {
   show_name <- !isFALSE(card$showGateNames)
   show_pct <- !isFALSE(card$showGatePercentages)
   gate_label <- function(g) { row<-Filter(function(x) identical(x$id,g$id),statistics); pct<-if(length(row)) row[[1]]$percentParent else NULL; paste0(if(show_name) g$name else "",if(show_pct && !is.null(pct)) paste0(if(show_name) " · " else "",sprintf("%.1f%%",pct)) else "") }
-  gate_col <- function(g) g$color %||% "#303e48"
+  gate_col <- function(g) if(isTRUE(card$blackGateOutlines)) "#000000" else g$color %||% "#303e48"
+  label_col <- function(g) if(isTRUE(card$blackGateLabels)) "#000000" else g$color %||% "#303e48"
   font_size <- suppressWarnings(as.numeric(card$gateLabelFontSizePt %||% 8.25))
   if(length(font_size)!=1L || !is.finite(font_size)) font_size <- 8.25
   label_cex <- max(6,min(24,font_size))/12
@@ -671,7 +685,7 @@ draw_child_gates <- function(card,d,project,statistics=list()) {
     label_height <- min(diff(yr),strheight(value,cex=label_cex))
     x <- max(xr[1]+anchor*label_width,min(xr[2]-(1-anchor)*label_width,x))
     y <- max(yr[1],min(yr[2]-label_height,y))
-    text(x,y,value,adj=c(anchor,0),cex=label_cex,col=gate_col(g))
+    text(x,y,value,adj=c(anchor,0),cex=label_cex,col=label_col(g))
   }
   same_axis <- function(a,b) identical(a[c("channel","scale","w","t","m","a")],b[c("channel","scale","w","t","m","a")])
   shown_ids <- unlist(d$displayGateIds %||% list(),use.names=FALSE)

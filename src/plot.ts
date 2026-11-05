@@ -47,7 +47,7 @@ export function overlay(
       x = geo.left + position.x * (geo.right - geo.left);
       y = geo.top + position.y * (geo.bottom - geo.top);
     }
-    return `<text data-shape="${escape(g.id)}" data-gate-label="${escape(g.id)}" x="${x}" y="${y}" text-anchor="${anchor}" fill="${g.color ?? "#303e48"}" font-size="${fontSize}" aria-label="${escape(g.name)}の分画ラベル（ドラッグで移動）">${escape(gateLabel(g))}</text>`;
+    return `<text data-shape="${escape(g.id)}" data-gate-label="${escape(g.id)}" x="${x}" y="${y}" text-anchor="${anchor}" fill="${style?.blackGateLabels ? "#000" : g.color ?? "#303e48"}" font-size="${fontSize}" aria-label="${escape(g.name)}の分画ラベル（ドラッグで移動）">${escape(gateLabel(g))}</text>`;
   };
   const gateLabel = (g: Gate) => {
     const stat = statistics.find((s) => s.id === g.id);
@@ -96,7 +96,7 @@ export function overlay(
     }
     const active = g.id === selected || ghost;
     const first = vertices[0];
-    const color = g.color ?? "#303e48";
+    const color = style?.blackGateOutlines ? "#000" : g.color ?? "#303e48";
     html += `<g data-shape="${escape(g.id)}" class="gate-shape ${active ? "editing" : ""}" stroke="${color}" fill="transparent" stroke-width="${active ? 2.2 : 1.5}">${shape}</g>`;
     if (first && g.type !== "quadrant" && gateLabel(g))
       html += label(g, Math.max(geo.left, Math.min(geo.right - 35, geo.px(first[0]) + 4)), Math.max(geo.top + 12, geo.py(first[1]) - 5));

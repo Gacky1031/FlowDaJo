@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { statSync } from "node:fs";
-import { clickDemo, clickToolbarAction } from "./helpers";
+import { clickDemo, clickToolbarAction, confirmStatisticsCsvOptions } from "./helpers";
 
 test("gate labels drag independently, persist, undo and export at a configurable point size", async ({ page }) => {
   const requests: any[] = [];
@@ -973,6 +973,7 @@ test("toolbar dropdowns hide until opened and their items remain clickable", asy
   expect(await outputItems.evaluate((panel) => panel.matches(":popover-open"))).toBe(true);
   expect(await visibleWithoutScrolling("#report")).toBe(true);
   await page.locator("#csv").click();
+  await confirmStatisticsCsvOptions(page);
   await expect(page.locator(".status")).toContainText("統計CSVを保存しました", { timeout: 30_000 });
   await expect(outputMenu).not.toHaveAttribute("open", "");
 });

@@ -59,6 +59,7 @@ import {
 } from "./axis-ui";
 import { contextMenu, closeMenu, type MenuAction } from "./context-menu";
 import { editPlotOptions } from "./plot-options";
+import { copyPlotToClipboard } from "./plot-clipboard";
 import { histogramAxisLabel, histogramSources, histogramExpansionOwner, expandHistogram, mergeHistograms } from "./histogram";
 import { editHistogramComparison } from "./histogram-ui";
 import "./style.css";
@@ -2752,30 +2753,101 @@ function openPlotMenu(c: WorksheetPlot, e: MouseEvent, hits: Gate[]) {
         changed();
       },
     },
+    { label: "このプロットをクリップボードにコピー", run: () => void copyPlot(c) },
     { label: "図をPDFで保存…", run: () => void exportPlot(c, "pdf") },
     { label: "図をSVGで保存…", run: () => void exportPlot(c, "svg") },
     { label: "プロットを複製", run: () => duplicatePlot(c) },
     plotDeleteAction(c),
   ]);
 }
+function fluorescenceChannelIds(samples: Sample[]) {
+  const nonFluorescence = /^(?:FSC|SSC|Time|Width|Height|Event)(?:$|[-_\s])/i;
+  return [...new Set(samples.flatMap((item) => item.channels.map((channel) => channel.id)))]
+    .filter((channel) => !nonFluorescence.test(channel));
+}
+function statisticsCsvOptionsDialog(channels: string[]) {
+  return new Promise<{
+    count: boolean;
+    percentParent: boolean;
+    percentTotal: boolean;
+    mfiChannels: string[];
+  } | null>((resolve) => {
+    const dialog = document.createElement("dialog");
+    dialog.className = "axis-dialog statistics-csv-dialog";
+    dialog.setAttribute("aria-label", "統計CSVの出力項目");
+    dialog.innerHTML = `<form><div class="axis-dialog-heading"><h2>統計CSVの出力項目</h2><button type="button" data-close aria-label="閉じる">×</button></div><p class="hint">各サンプル・各細胞分画について出力する統計列を選択します。MFIは必要な蛍光だけ追加できます。</p><fieldset><legend>基本統計</legend><div class="statistics-field-options"><label class="check"><input name="count" type="checkbox" checked> 細胞数 (Events)</label><label class="check"><input name="percentParent" type="checkbox" checked> %Parent</label><label class="check"><input name="percentTotal" type="checkbox" checked> %Total</label></div></fieldset><fieldset><legend>蛍光ごとのMFI</legend>${channels.length ? `<div class="statistics-population-actions"><button type="button" data-mfi-all>すべて選択</button><button type="button" data-mfi-none>すべて解除</button></div><div class="gate-display-list">${channels.map((channel) => `<label><input type="checkbox" name="mfiChannel" value="${esc(channel)}"><span></span><span>${esc(channel)}</span></label>`).join("")}</div>` : '<p class="hint">選択サンプルに蛍光チャンネルがありません。</p>'}</fieldset><p class="csv-options-error" role="alert" hidden>少なくとも1つの統計項目を選択してください。</p><div class="axis-dialog-actions"><button type="button" data-cancel>キャンセル</button><button type="submit" class="primary">出力項目を確定</button></div></form>`;
+    const form = dialog.querySelector("form")!;
+    const finish = (value: {
+      count: boolean;
+      percentParent: boolean;
+      percentTotal: boolean;
+      mfiChannels: string[];
+    } | null) => {
+      dialog.close();
+      dialog.remove();
+      resolve(value);
+    };
+    dialog.querySelector<HTMLButtonElement>("[data-close]")!.onclick = () => finish(null);
+    dialog.querySelector<HTMLButtonElement>("[data-cancel]")!.onclick = () => finish(null);
+    dialog.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      finish(null);
+    });
+    dialog.querySelector<HTMLButtonElement>("[data-mfi-all]")?.addEventListener("click", () =>
+      dialog.querySelectorAll<HTMLInputElement>('[name="mfiChannel"]').forEach((input) => { input.checked = true; }));
+    dialog.querySelector<HTMLButtonElement>("[data-mfi-none]")?.addEventListener("click", () =>
+      dialog.querySelectorAll<HTMLInputElement>('[name="mfiChannel"]').forEach((input) => { input.checked = false; }));
+    form.onsubmit = (event) => {
+      event.preventDefault();
+      const values = new FormData(form);
+      const selection = {
+        count: values.has("count"),
+        percentParent: values.has("percentParent"),
+        percentTotal: values.has("percentTotal"),
+        mfiChannels: values.getAll("mfiChannel").map(String),
+      };
+      if (!selection.count && !selection.percentParent && !selection.percentTotal && !selection.mfiChannels.length) {
+        dialog.querySelector<HTMLElement>(".csv-options-error")!.hidden = false;
+        return;
+      }
+      finish(selection);
+    };
+    document.body.append(dialog);
+    dialog.showModal();
+  });
+}
 async function exportStatistics(id?: string) {
   if (!project.samples.length) {
     message("サンプルを読み込んでください。");
     return;
   }
+  const samples = id ? project.samples.filter((item) => item.id === id) : project.samples;
+  const statisticsFields = await statisticsCsvOptionsDialog(fluorescenceChannelIds(samples));
+  if (!statisticsFields) return;
   const path = await save({
     defaultPath: `${project.name}-statistics.csv`,
     filters: [{ name: "CSV", extensions: ["csv"] }],
   });
   if (!path) return;
-  await runOperation("全イベントの統計をCSV出力中…", async () => {
+  await runOperation("統計CSVを出力中…", async () => {
     await rpc("statistics_csv", {
       project: clone(),
       path,
       sampleIds: id ? [id] : undefined,
+      statisticsFields,
     });
     message(`統計CSVを保存しました: ${path}`);
   });
+}
+async function copyPlot(c: WorksheetPlot) {
+  const stage = document.querySelector<HTMLElement>(`[data-stage="${c.id}"]`);
+  if (!stage) return;
+  try {
+    await copyPlotToClipboard(stage);
+    message("プロットをクリップボードにコピーしました");
+  } catch (error) {
+    message(error instanceof Error ? error.message : String(error), true);
+  }
 }
 async function exportPlot(c: WorksheetPlot, format: "pdf" | "svg") {
   const path = await save({
@@ -2880,7 +2952,7 @@ function wire() {
       const plot = sheet().plots.find((plot) => plot.id === button.dataset.histogramAxis)!;
       contextMenu(event.clientX, event.clientY, "ヒストグラムの縦軸・平滑化", [
         ...(["count", "percent", "max", "mode"] as const).map((value) => ({ label: `${(plot.histogramNormalize ?? "count") === value ? "✓ " : ""}${histogramAxisLabel(value)}`, run: () => { remember(); plot.histogramNormalize = value; changed(); } })),
-        { label: `${plot.histogramSmoothing ? "✓ " : ""}ヒストグラムを平滑化`, run: () => { remember(); plot.histogramSmoothing = !plot.histogramSmoothing; changed(); } },
+        { label: `${(plot.histogramSmoothing ?? true) ? "✓ " : ""}ヒストグラムを平滑化`, run: () => { remember(); plot.histogramSmoothing = !(plot.histogramSmoothing ?? true); changed(); } },
       ]);
     };
     button.onclick = show; button.oncontextmenu = show;
@@ -3690,8 +3762,12 @@ function wire() {
     (el) =>
       (el.onchange = () => {
         remember();
-        sheet().plots.find((p) => p.id === el.dataset.mode)!.mode =
-          el.value as WorksheetPlot["mode"];
+        const plot = sheet().plots.find((p) => p.id === el.dataset.mode)!;
+        if (el.value === "histogram" && plot.mode !== "histogram") {
+          if (plot.bins === undefined) plot.bins = 256;
+          if (plot.histogramSmoothing === undefined) plot.histogramSmoothing = true;
+        }
+        plot.mode = el.value as WorksheetPlot["mode"];
         changed();
       }),
   );

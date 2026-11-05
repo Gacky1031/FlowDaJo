@@ -34,6 +34,13 @@ test("v0.4 scientific rendering payload, gates, modes, and vector/statistics exp
     assert.ok(scatter.xTicks.every(t => !t.label.includes("e") && !t.label.includes("E")));
     assert.ok(result.plots.histogram.excluded > 0, "histogram still excludes undefined logarithms");
     assert.equal(result.plots.histogram.histogram.rawCounts.reduce((a,b) => a+b, 0), 16000 - result.plots.histogram.excluded);
+    const defaultHistogram = await w.call({ action: "worksheet", project, sampleId: sample.id,
+      plots: [{ ...base, id: "histogram-defaults", mode: "histogram", bins: undefined }] });
+    const histogramDefaults = defaultHistogram.plots["histogram-defaults"];
+    assert.equal(histogramDefaults.histogram.edges.length, 257, "histogram defaults to 256 bins");
+    assert.equal(histogramDefaults.histogramSmoothing, true, "histogram smoothing defaults on");
+    assert.notDeepEqual(histogramDefaults.histogram.counts, histogramDefaults.histogram.rawCounts,
+      "default smoothing changes the displayed counts without changing raw event totals");
     assert.ok(Math.abs(result.plots.cdf.cdf.y.at(-1) - 100) < 1e-12);
     for (const mode of ["density", "contour", "pseudocolor", "zebra"]) {
       const d = result.plots[mode].density;
@@ -79,11 +86,20 @@ test("v0.4 scientific rendering payload, gates, modes, and vector/statistics exp
     assert.deepEqual(negative.errors,[]);assert.ok(negative.plots["negative-log"].total>0);assert.equal(negative.plots["negative-log"].excluded,0);assert.ok(negative.plots["negative-log"].density.z.some(v=>v>0));
     const csv = join(storage, "statistics.csv"), pdf = join(storage, "plot.pdf"), svg = join(storage, "plot.svg");
     sample.name = "=日本語";
-    await w.call({ action: "statistics_csv", project, sampleIds: [sample.id], path: csv });
+    await w.call({ action: "statistics_csv", project, sampleIds: [sample.id], path: csv,
+      statisticsFields: { count: true, percentParent: true, percentTotal: true, mfiChannels: ["FITC-A"] } });
     await w.call({ action: "plot_pdf", project, sampleId: sample.id, plots: [plots[3]], path: pdf });
     await w.call({ action: "plot_svg", project, sampleId: sample.id, plots: [plots[4]], path: svg });
     assert.deepEqual([...readFileSync(csv).subarray(0,3)], [0xef,0xbb,0xbf]);
     const csvText = readFileSync(csv, "utf8"); assert.match(csvText, /'=日本語/u); assert.match(csvText, /"-\d/);
+    const csvHeader = csvText.split(/\r?\n/)[0];
+    assert.match(csvHeader, /"count"/); assert.match(csvHeader, /"percentParent"/); assert.match(csvHeader, /"percentTotal"/);
+    assert.match(csvHeader, /"median:FITC-A"/); assert.doesNotMatch(csvHeader, /"median:PE-A"/);
+    const defaultCsv = join(storage, "statistics-default.csv");
+    await w.call({ action: "statistics_csv", project, sampleIds: [sample.id], path: defaultCsv });
+    const defaultCsvHeader = readFileSync(defaultCsv, "utf8").split(/\r?\n/)[0];
+    assert.match(defaultCsvHeader, /"count"/); assert.match(defaultCsvHeader, /"percentParent"/); assert.match(defaultCsvHeader, /"percentTotal"/);
+    assert.doesNotMatch(defaultCsvHeader, /"median:/);
     assert.ok(statSync(pdf).size > 1000); assert.match(readFileSync(svg, "utf8"), /<svg/);
 
     const allModesPdf = join(storage, "all-modes.pdf"), report = join(storage, "report.pdf");
