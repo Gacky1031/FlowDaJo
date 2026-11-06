@@ -118,6 +118,12 @@ export interface PlotStyle {
   /** Draw gate names and percentages in black instead of each gate's color. */
   blackGateLabels?: boolean;
   showXAxis?: boolean;
+  showXTitle?: boolean;
+  showYTitle?: boolean;
+  /** Sample/population/event-count heading above the plotting area. */
+  showPlotTitle?: boolean;
+  /** Tick marks and tick labels on both axes. */
+  showTicks?: boolean;
 }
 export interface WorksheetPlot extends Plot, PlotStyle {
   /** Immutable import settings for the channels currently assigned to each axis. */

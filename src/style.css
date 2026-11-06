@@ -1399,6 +1399,8 @@ dialog.properties::backdrop { background: #102e4555; }
 #close-properties { float: right; }
 .plot-stage.hide-x-axis .axis-x,
 .plot-stage.hide-x-axis .transform-x { display: none; }
+.plot-stage.hide-x-title .axis-x,
+.plot-stage.hide-y-title .axis-y { display: none; }
 .axis-preview-body { min-height: 155px; color: #61798a; }
 .axis-preview-body svg { display: block; width: 100%; height: 138px; background: #f8fbfd; border: 1px solid #dce5ec; }
 .axis-preview-body small { display: block; margin-top: 4px; }

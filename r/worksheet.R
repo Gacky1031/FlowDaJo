@@ -648,11 +648,12 @@ draw_card <- function(card,d,compact=FALSE,sample_info=NULL) {
   if(mode %in% c("contour","density","zebra") && isTRUE(d$showOutliers) && length(den$levels) && length(xs)) {
     keep<-is.finite(pd)&pd<min(unlist(den$levels));if(any(keep))points(xs[keep],ys[keep],pch=16,cex=d$dotSize/5,col=adjustcolor(col,alpha.f=alpha))
   }
-  draw_ticks(d,mode,!isFALSE(card$showXAxis),compact)
-  if(!isFALSE(card$showXAxis))mtext(print_channel_label(sample_info,card$x$channel),side=1,line=if(compact)2.1 else 2.6,cex=if(compact).56 else .68)
-  mtext(if(mode=="histogram")hist_label else if(mode=="cdf")"Cumulative %" else print_channel_label(sample_info,card$y$channel),side=2,line=if(compact)2.35 else 2.9,cex=if(compact).56 else .68)
+  if(!isFALSE(card$showTicks))draw_ticks(d,mode,!isFALSE(card$showXAxis),compact)
+  if(!isFALSE(card$showXAxis) && !isFALSE(card$showXTitle))mtext(print_channel_label(sample_info,card$x$channel),side=1,line=if(compact)2.1 else 2.6,cex=if(compact).56 else .68)
+  if(!isFALSE(card$showYTitle))mtext(if(mode=="histogram")hist_label else if(mode=="cdf")"Cumulative %" else print_channel_label(sample_info,card$y$channel),side=2,line=if(compact)2.35 else 2.9,cex=if(compact).56 else .68)
   if(!isFALSE(card$showXAxis))box(bty="l") else segments(unlist(d$xRange)[1],unlist(d$yRange)[1],unlist(d$xRange)[1],unlist(d$yRange)[2])
-  if(compact) {
+  if(isFALSE(card$showPlotTitle)) {
+  } else if(compact) {
     mtext(substr(paste(d$sampleName,if(!isFALSE(card$showGateNames))paste(unlist(card$population),collapse=" / ")else""),1,48),side=3,line=.5+legend_lines,cex=.55,font=2)
   } else {
     mtext(substr(d$sampleName,1,45),side=3,line=2.3+legend_lines,cex=.8,font=2)

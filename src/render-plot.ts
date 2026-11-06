@@ -365,18 +365,20 @@ export function drawPlot(
   ctx.lineTo(g.left, g.bottom);
   if (style?.showXAxis !== false) ctx.lineTo(g.right, g.bottom);
   ctx.stroke();
-  if (style?.showXAxis !== false) allX.filter((t) => !t.label).forEach((t) => {
+  const showTicks = style?.showTicks !== false;
+  const showXTicks = showTicks && style?.showXAxis !== false;
+  if (showXTicks) allX.filter((t) => !t.label).forEach((t) => {
     const x = g.px(t.value);
     if (x < g.left || x > g.right) return;
     ctx.beginPath(); ctx.moveTo(x, g.bottom); ctx.lineTo(x, g.bottom + 2.5); ctx.stroke();
   });
-  allY.filter((t) => !t.label).forEach((t) => {
+  if (showTicks) allY.filter((t) => !t.label).forEach((t) => {
     const y = g.py(t.value);
     if (y < g.top || y > g.bottom) return;
     ctx.beginPath(); ctx.moveTo(g.left - 2.5, y); ctx.lineTo(g.left, y); ctx.stroke();
   });
   ctx.textAlign = "center";
-  if (style?.showXAxis !== false) xt.forEach((t) => {
+  if (showXTicks) xt.forEach((t) => {
     const x = g.px(t.value);
     if (x < g.left - 1 || x > g.right + 1) return;
     ctx.beginPath();
@@ -386,7 +388,7 @@ export function drawPlot(
     ctx.fillText(t.label, x, g.bottom + 15);
   });
   ctx.textAlign = "right";
-  yt.forEach((t) => {
+  if (showTicks) yt.forEach((t) => {
     const y = g.py(t.value);
     if (y < g.top - 1 || y > g.bottom + 1) return;
     ctx.beginPath();
@@ -430,6 +432,7 @@ export function drawPlot(
   const yLabel = stage.querySelector<HTMLElement>(".axis-y");
   if (yLabel) yLabel.style.top = `${(g.top + g.bottom) / 2}px`;
 
+  if (style?.showPlotTitle === false) return;
   ctx.fillStyle = "#3e494f";
   ctx.font = "10px Segoe UI, Arial, sans-serif";
   ctx.textAlign = "left";
